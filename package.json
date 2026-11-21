@@ -1,6 +1,6 @@
 {
   "name": "medidor-3d",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "description": "CLI que mide fps, tiempos de cuadro, draw calls, peso y memoria de una página WebGL (three.js, Babylon…) con Chrome real",
   "type": "module",

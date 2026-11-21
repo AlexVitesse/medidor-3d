@@ -1,10 +1,13 @@
 // Init script que medidor.mjs inyecta antes que cualquier script de la página (page.addInitScript).
-// No sabe nada del motor 3D: cuenta cuadros con un rAF propio, long tasks con PerformanceObserver y
-// draw calls / triángulos envolviendo los métodos de dibujo de WebGL. Expone window.__medidor.
+// Cuenta cuadros con un rAF propio, long tasks con PerformanceObserver, draw calls / triángulos y shaders enlazados
+// (linkProgram) envolviendo WebGL; nada de eso depende del motor 3D. Si la página usa three.js, además engancha
+// __THREE_DEVTOOLS__ para seguir renderer.info.programs y la firma de luces y sombras (la causa típica de una
+// recompilación). Expone window.__medidor.
 (() => {
   if (window.top !== window || window.__medidor) return;
   const cfg = window.__medidorCfg || {};
-  const S = { activo: false, ms: [], calls: [], tris: [], c: 0, t: 0, ult: 0, longTasks: [] };
+  const HUECO = 250; // ms: un cuadro más largo que esto es un tirón visible
+  const S = { activo: false, ms: [], calls: [], tris: [], c: 0, t: 0, ult: 0, longTasks: [], huecos: [], links: [], recomp: [] };
 
   try {
     new PerformanceObserver((l) => { for (const e of l.getEntries()) S.longTasks.push([e.startTime, e.duration]); }).observe({ type: 'longtask', buffered: true });
@@ -25,12 +28,51 @@
       envolver(P, 'drawArraysInstanced', 2, 3);
       envolver(P, 'drawElementsInstanced', 1, 4);
       envolver(P, 'drawRangeElements', 3);
+      // cada shader nuevo pasa por linkProgram: después de la carga, es una recompilación (con cualquier motor)
+      const link = P?.linkProgram;
+      if (typeof link === 'function') P.linkProgram = function (p) { S.links.push(performance.now()); return link.call(this, p); };
     }
   }
 
+  // ---------- three.js: programas y su causa probable
+  const T = { r: null, escenas: [], vistos: new Set(), claves: [], firma: null, nProg: 0 };
+  try {
+    const dt = (window.__THREE_DEVTOOLS__ ??= new EventTarget());
+    dt.addEventListener('observe', (e) => { const d = e.detail; if (d?.isWebGLRenderer) T.r ??= d; else if (d?.isScene) T.escenas.push(new WeakRef(d)); });
+  } catch { /* sin EventTarget o sin WeakRef */ }
+  // visible de verdad: three no junta una luz si ella o algún padre está oculto
+  const visible = (o) => { for (let a = o; a; a = a.parent) if (!a.visible) return false; return true; };
+  function firma() { // { 'SpotLight': n visibles, 'SpotLight sombra': n con castShadow, ..., 'shadowMap.type': x }
+    const f = {};
+    for (const w of T.escenas) {
+      const s = w.deref(); if (!s) continue;
+      s.traverse((o) => { if (o.isLight && visible(o)) { f[o.type] = (f[o.type] || 0) + 1; if (o.castShadow) f[o.type + ' sombra'] = (f[o.type + ' sombra'] || 0) + 1; } });
+    }
+    if (T.r) f['shadowMap.type'] = T.r.shadowMap.type;
+    return f;
+  }
+  const cambios = (a, b) => [...new Set([...Object.keys(a || {}), ...Object.keys(b || {})])].filter((k) => a?.[k] !== b?.[k]).map((k) => `${k} ${a?.[k] ?? 0} → ${b?.[k] ?? 0}`);
+  setInterval(() => {
+    if (!T.r || document.hidden) return;
+    const progs = T.r.info.programs || [], f = firma(), nuevos = [];
+    for (const p of progs) if (!T.vistos.has(p.id)) { T.vistos.add(p.id); nuevos.push(p.cacheKey); }
+    if (nuevos.length && T.nProg) { // los primeros programas (T.nProg = 0) son la carga normal, no una recompilación
+      // campo del cacheKey que cambió respecto al programa viejo más parecido (pista cruda: el índice depende del material)
+      const dif = [];
+      for (const k of nuevos.slice(0, 6)) {
+        const c = k.split(','); let best = null, bd = 1e9;
+        for (const v of T.claves) { if (v.length !== c.length || v[0] !== c[0]) continue; let d = 0; for (let i = 0; i < c.length; i++) if (v[i] !== c[i]) d++; if (d < bd) { bd = d; best = v; } }
+        dif.push(best ? `${c[0]}: ` + c.map((x, i) => (x !== best[i] ? `[${i}] ${best[i].slice(0, 24)}→${x.slice(0, 24)}` : null)).filter(Boolean).slice(0, 4).join(', ') : `${c[0]}: material nuevo`);
+      }
+      S.recomp.push({ t: performance.now(), nuevos: nuevos.length, total: progs.length, luces: cambios(T.firma, f), claves: [...new Set(dif)] });
+    }
+    for (const k of nuevos) T.claves.push(k.split(','));
+    T.nProg = progs.length; T.firma = f;
+  }, 500);
+
   const cuadro = (ts) => {
     if (S.activo) {
-      if (S.ult) { S.ms.push(ts - S.ult); S.calls.push(S.c); S.tris.push(S.t); }
+      if (S.ult) { const d = ts - S.ult; S.ms.push(d); S.calls.push(S.c); S.tris.push(S.t); if (d > HUECO) S.huecos.push([ts - d, d]); }
       S.ult = ts;
     }
     S.c = S.t = 0;
@@ -38,15 +80,25 @@
   };
   requestAnimationFrame(cuadro);
 
+  const desde = (lista, t0) => lista.filter((x) => (Array.isArray(x) ? x[0] : x.t ?? x) >= t0);
   window.__medidor = {
     // empieza un paso: borra muestras; el primer cuadro solo fija la referencia
-    marcar() { Object.assign(S, { activo: true, ms: [], calls: [], tris: [], ult: 0, c: 0, t: 0, t0: performance.now() }); },
-    // termina el paso y devuelve las muestras crudas
+    marcar() { Object.assign(S, { activo: true, ms: [], calls: [], tris: [], huecos: [], ult: 0, c: 0, t: 0, t0: performance.now() }); },
+    // termina el paso y devuelve las muestras crudas; los tiempos van en s desde el inicio del paso
     leer() {
       S.activo = false;
-      const lt = S.longTasks.filter(([t]) => t >= S.t0).map(([, d]) => d);
-      return { ms: S.ms, calls: cfg.sinGl ? null : S.calls, tris: cfg.sinGl ? null : S.tris, longTasks: lt, durS: (performance.now() - S.t0) / 1000 };
+      const t0 = S.t0, rel = (t) => Math.round((t - t0) / 100) / 10;
+      return {
+        ms: S.ms, calls: cfg.sinGl ? null : S.calls, tris: cfg.sinGl ? null : S.tris, durS: (performance.now() - t0) / 1000,
+        longTasks: desde(S.longTasks, t0).map(([, d]) => d), longTasksT: desde(S.longTasks, t0).map(([t, d]) => [rel(t), Math.round(d)]),
+        huecos: S.huecos.map(([t, d]) => [rel(t), Math.round(d)]),
+        links: cfg.sinGl ? null : desde(S.links, t0).map(rel),
+        recompilaciones: desde(S.recomp, t0).map((r) => ({ ...r, t: rel(r.t) })),
+        programas: T.r ? (T.r.info.programs || []).length : null,
+      };
     },
     longTasksHasta: (t) => S.longTasks.filter(([s]) => s <= t).map(([, d]) => d),
+    linksHasta: (t) => S.links.filter((s) => s <= t).length,
+    programas: () => (T.r ? (T.r.info.programs || []).length : null),
   };
 })();

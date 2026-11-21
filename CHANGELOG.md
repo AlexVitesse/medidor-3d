@@ -2,6 +2,19 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 
+## [0.2.0] - 2026-11-20
+
+### Agregado
+- `--interactuar` (y `interactuar` por paso): arrastres reales con el ratón (izquierdo y derecho) y rueda sobre el canvas más grande durante la medición.
+- Recompilaciones: `sonda.js` envuelve `linkProgram` (con cualquier motor) y, si la página es three.js, sigue `renderer.info.programs` y la firma de luces y sombras por `__THREE_DEVTOOLS__`. Cada paso trae `shaders: {links, programas, rafagas, causas}` y la carga trae `shaders: {links, programas}`.
+- Tirones con hora: `huecos` (cuadros de más de 250 ms) y `longTasksT`.
+- Alertas al final (stderr) y sección "Alertas" en el `.md`: shaders compilados después de la carga, con la causa (p. ej. `SpotLight 1 → 2`), y cuadros de más de 1 s.
+- `comparar` también compara `huecos.n`, `huecos.maxMs` y `shaders.links`.
+- `prueba/escena.html?recompilar=1` enlaza un programa nuevo cada ~1 s, y `prueba.mjs` comprueba que se detecte con `--interactuar`.
+
+### Cambiado
+- JSON `version: 2` (solo agrega campos).
+
 ## [0.1.1] - 2026-11-20
 
 ### Corregido

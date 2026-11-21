@@ -7,7 +7,7 @@ import { parseArgs } from 'node:util';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resumirPaso, resumirLongTasks, esSoftware, aMarkdown, comparar, comparacionMd } from './lib.mjs';
+import { resumirPaso, resumirLongTasks, esSoftware, aMarkdown, comparar, comparacionMd, alertas } from './lib.mjs';
 
 const AQUI = dirname(fileURLToPath(import.meta.url));
 const log = (...a) => console.error('[medidor]', ...a);
@@ -20,7 +20,7 @@ const { values: o, positionals } = parseArgs({
     etiqueta: { type: 'string' }, dur: { type: 'string', default: '10' }, calentar: { type: 'string', default: '3' },
     listo: { type: 'string' }, js: { type: 'string' }, pasos: { type: 'string' },
     ancho: { type: 'string', default: '1600' }, alto: { type: 'string', default: '900' }, dpr: { type: 'string', default: '1' },
-    'sin-vsync': { type: 'boolean' }, visible: { type: 'boolean' }, 'sin-gl': { type: 'boolean' },
+    'sin-vsync': { type: 'boolean' }, visible: { type: 'boolean' }, 'sin-gl': { type: 'boolean' }, interactuar: { type: 'boolean' },
     chrome: { type: 'string' }, angle: { type: 'string' }, extra: { type: 'string' }, cpu: { type: 'string' },
     captura: { type: 'string' }, salida: { type: 'string' }, md: { type: 'string' }, ayuda: { type: 'boolean', short: 'h' },
   },
@@ -89,6 +89,20 @@ page.on('console', (m) => m.type() === 'error' && errores.length < 30 && errores
 const heap = async () => { await cdp.send('HeapProfiler.collectGarbage'); return MB((await cdp.send('Runtime.getHeapUsage')).usedSize); };
 const extra = () => (o.extra ? page.evaluate(`(() => { const v = (${o.extra}); return v === undefined ? null : JSON.parse(JSON.stringify(v)); })()`).catch((e) => ({ error: String(e.message || e) })) : null);
 
+// arrastres reales (izquierdo = orbitar, derecho = desplazar) y rueda sobre el canvas más grande, hasta agotar ms
+async function interactuar(ms) {
+  const r = await page.evaluate(() => { const c = [...document.querySelectorAll('canvas')].map((x) => x.getBoundingClientRect()).sort((a, b) => b.width * b.height - a.width * a.height)[0]; return c && { x: c.x, y: c.y, w: c.width, h: c.height }; }) || { x: 0, y: 0, w: ancho, h: alto };
+  const fin = Date.now() + ms, cx = r.x + r.w * 0.45, cy = r.y + r.h * 0.5;
+  for (let k = 0; Date.now() < fin; k++) {
+    const boton = k % 4 === 3 ? 'right' : 'left';
+    await page.mouse.move(cx, cy); await page.mouse.down({ button: boton });
+    for (let i = 0; i < 40 && Date.now() < fin; i++) await page.mouse.move(cx + Math.sin(i / 7 + k) * r.w * 0.2, cy + Math.cos(i / 11 + k) * r.h * 0.12, { steps: 2 });
+    await page.mouse.up({ button: boton });
+    if (k % 3 === 0) for (let i = 0; i < 6 && Date.now() < fin; i++) { await page.mouse.wheel(0, k % 2 ? 200 : -200); await page.waitForTimeout(50); }
+    await page.waitForTimeout(Math.max(0, Math.min(300, fin - Date.now())));
+  }
+}
+
 log(`abriendo ${url}`);
 try { await page.goto(url, { waitUntil: 'load', timeout: LIMITE }); } catch (e) { errores.push(`[goto] ${e.message.split('\n')[0]}`); }
 if (o.listo) {
@@ -98,11 +112,12 @@ if (o.listo) {
 const listoMs = await page.evaluate(() => performance.now());
 const nav = await page.evaluate(() => { const e = performance.getEntriesByType('navigation')[0]; return e ? { dcl: e.domContentLoadedEventEnd, load: e.loadEventEnd } : {}; });
 const ltCarga = await page.evaluate((t) => window.__medidor?.longTasksHasta(t) || [], listoMs);
+const shadersCarga = await page.evaluate((t) => ({ links: window.__medidor?.linksHasta(t) ?? null, programas: window.__medidor?.programas() ?? null }), listoMs).catch(() => ({}));
 const transferidos = [...recibidos];
 const carga = {
   domContentLoadedMs: Math.round(nav.dcl || 0), loadMs: Math.round(nav.load || 0), listoMs: Math.round(listoMs),
   peticiones: transferidos.length, transferidoBytes: transferidos.reduce((s, r) => s + r.bytes, 0),
-  masPesados: transferidos.sort((a, b) => b.bytes - a.bytes).slice(0, 10), longTasks: resumirLongTasks(ltCarga), errores,
+  masPesados: transferidos.sort((a, b) => b.bytes - a.bytes).slice(0, 10), longTasks: resumirLongTasks(ltCarga), shaders: shadersCarga, errores,
 };
 log(`listo en ${carga.listoMs} ms · ${carga.peticiones} peticiones · ${MB(carga.transferidoBytes)} MB`);
 
@@ -118,8 +133,9 @@ for (const p of pasos) {
   if (p.espera) await page.waitForTimeout(p.espera);
   const ini = await heap();
   await page.evaluate(() => window.__medidor.marcar());
-  log(`midiendo "${nombre}" ${d} s`);
-  await page.waitForTimeout(d * 1000);
+  const inter = p.interactuar ?? !!o.interactuar;
+  log(`midiendo "${nombre}" ${d} s${inter ? ' con ratón' : ''}`);
+  if (inter) await interactuar(d * 1000); else await page.waitForTimeout(d * 1000);
   const crudo = await page.evaluate(() => window.__medidor.leer());
   resultados.push(resumirPaso({ nombre, ...crudo, heapMB: { ini, fin: await heap() }, extra: await extra() }));
 }
@@ -143,7 +159,7 @@ const navegador = `${browser.browserType().name()} ${browser.version()}`;
 await browser.close();
 
 const reporte = {
-  version: 1, fecha: new Date().toISOString(), url, etiqueta: o.etiqueta || null,
+  version: 2, fecha: new Date().toISOString(), url, etiqueta: o.etiqueta || null,
   entorno: { plataforma: `${process.platform}-${process.arch}`, navegador, gpu, software: esSoftware(gpu), viewport: [ancho, alto], dpr, vsync: !o['sin-vsync'] },
   carga, pasos: resultados, cpu,
 };
@@ -159,4 +175,5 @@ else {
   writeFileSync(`${base}.md`, aMarkdown(reporte));
   log(`→ ${base}.json / .md`);
   for (const p of resultados) log(`${p.nombre}: fps p50 ${p.fps.p50} · p1 ${p.fps.p1} · ms p99 ${p.ms.p99} · calls ${p.gl?.calls ?? '–'} · tris ${p.gl?.tris ?? '–'}`);
+  for (const a of alertas(reporte)) log(rojo(`ALERTA: ${a}`));
 }

@@ -18,7 +18,7 @@ node prueba.mjs          # unitaria + integración con Chrome
 
 ```
 node medidor.mjs <url> [--etiqueta x] [--dur 10] [--calentar 3] [--listo "<expr>"] [--js "<código>"]
-     [--pasos pasos.json] [--ancho 1600 --alto 900 --dpr 1] [--sin-vsync] [--visible] [--sin-gl]
+     [--pasos pasos.json] [--interactuar] [--ancho 1600 --alto 900 --dpr 1] [--sin-vsync] [--visible] [--sin-gl]
      [--chrome <ruta>] [--angle <backend>] [--extra "<expr>"] [--cpu 25] [--captura fin.png] [--salida reportes/x | -]
 node medidor.mjs comparar a.json b.json [--md comparacion.md]
 ```
@@ -29,7 +29,8 @@ node medidor.mjs comparar a.json b.json [--md comparacion.md]
 | `--js "<código>"` | se evalúa una vez, tras la carga y antes de calentar. |
 | `--calentar 3` | segundos de espera antes del primer paso (compilación de shaders, texturas). |
 | `--dur 10` | segundos de medición por paso (un paso puede sobrescribirlo). |
-| `--pasos pasos.json` | `[{nombre, js, espera, dur}]`. Sin pasos hay uno solo, `base`. `js` se evalúa y, si devuelve una promesa, se espera; `espera` son ms extra antes de medir. |
+| `--interactuar` | durante cada paso mueve el ratón de verdad sobre el canvas más grande: arrastres con el botón izquierdo (orbitar) y derecho (desplazar) y rueda. Un paso puede activarlo solo para él con `interactuar: true`. Muchos tirones solo aparecen al mover la cámara. |
+| `--pasos pasos.json` | `[{nombre, js, espera, dur, interactuar}]`. Sin pasos hay uno solo, `base`. `js` se evalúa y, si devuelve una promesa, se espera; `espera` son ms extra antes de medir. |
 | `--extra "<expr>"` | expresión serializable que se guarda al final de cada paso (p. ej. `window.__inspector3d?.stats` o el contador propio de la app). |
 | `--cpu N` | las N funciones con más tiempo propio, del Profiler de CDP, sobre todos los pasos. |
 | `--sin-vsync` | agrega `--disable-gpu-vsync --disable-frame-rate-limit`. |
@@ -53,6 +54,10 @@ node medidor.mjs comparar a.json b.json [--md comparacion.md]
 - **Draw calls y triángulos:** wrappers sobre `drawArrays`, `drawElements`, `drawArraysInstanced`, `drawElementsInstanced` y `drawRangeElements` de WebGL1 y WebGL2. Triángulos: n/3 en TRIANGLES, n−2 en STRIP/FAN, por el número de instancias. Se reporta la **mediana por cuadro** (`calls`, `tris`) y el **máximo** (`callsMax`, `trisMax`). No cuenta `WEBGL_multi_draw` ni `ANGLE_instanced_arrays`.
 - **Peso:** CDP `Network.loadingFinished.encodedDataLength` hasta `listo`, con la caché del navegador desactivada. Total, número de peticiones y las 10 más pesadas.
 - **Heap JS:** CDP `HeapProfiler.collectGarbage` + `Runtime.getHeapUsage`, al inicio y al final de cada paso.
+- **Tirones** (v0.2): cada cuadro de más de 250 ms, con su hora (s desde el inicio del paso). `huecos.lista` guarda los 10 más largos y `longTasksT` las 10 tareas largas más largas, también con hora.
+- **Shaders** (v0.2): se envuelve `linkProgram`. Cada link después de la carga es una **recompilación**, con cualquier motor: el hilo principal se detiene mientras compila (segundos en D3D11 con muchas luces). Se agrupan en ráfagas (links a menos de 1 s entre sí).
+- **Causa de la recompilación (three.js):** la sonda engancha `__THREE_DEVTOOLS__` y cada 0.5 s compara `renderer.info.programs` y la firma de luces (luces visibles por tipo, cuántas con `castShadow` y `shadowMap.type`). Si aparecen programas nuevos, guarda qué cambió (`SpotLight 1 → 2`) y, como pista, el campo del `cacheKey` que cambió respecto al programa viejo más parecido. Para saber **qué objeto** fue y en qué línea se agregó, abre la página con inspector-3d (`?debug=1`, sección "Recompilaciones").
+- **Alertas** (v0.2): al final de la corrida (en stderr y en la sección "Alertas" del `.md`) se avisa de las recompilaciones después de la carga y de los cuadros de más de 1 s.
 - **GPU:** `UNMASKED_RENDERER_WEBGL`. Si dice SwiftShader, llvmpipe o similar, `entorno.software = true` y el reporte muestra un aviso.
 
 **CSP:** el contexto se abre con `bypassCSP: true`. `--listo`, `--js`, `--extra` y el `js` de los pasos se evalúan como texto dentro de la página, y una CSP sin `'unsafe-eval'` los rompería. La CSP de la página no se aplica durante la medición.
@@ -60,14 +65,16 @@ node medidor.mjs comparar a.json b.json [--md comparacion.md]
 **Límite:** se mide la cadencia de `requestAnimationFrame`, no el tiempo de GPU. Para tiempo de GPU por cuadro, combinar con
 [stats-gl](https://github.com/RenaudRohlinger/stats-gl); para ver qué hay dentro de un cuadro, [Spector.js](https://spector.babylonjs.com/).
 
-### JSON (`version: 1`)
+### JSON (`version: 2`; la 2 solo agrega campos a la 1)
 
 ```
 { version, fecha, url, etiqueta,
   entorno:{plataforma,navegador,gpu,software,viewport:[w,h],dpr,vsync},
-  carga:{domContentLoadedMs,loadMs,listoMs,peticiones,transferidoBytes,masPesados:[{url,bytes}],longTasks:{n,totalMs,maxMs},errores:[]},
+  carga:{domContentLoadedMs,loadMs,listoMs,peticiones,transferidoBytes,masPesados:[{url,bytes}],longTasks:{n,totalMs,maxMs},shaders:{links,programas},errores:[]},
   pasos:[{nombre,durS,cuadros,fps:{media,p50,p5,p1},ms:{p50,p95,p99,max},longTasks:{n,totalMs,maxMs},
-          gl:{calls,tris,callsMax,trisMax},heapMB:{ini,fin},extra}],
+          gl:{calls,tris,callsMax,trisMax},heapMB:{ini,fin},extra,
+          huecos:{n,maxMs,lista:[[t,ms]]},longTasksT:[[t,ms]],
+          shaders:{links,programas,rafagas:[{t,n}],causas:[{t,nuevos,total,luces:[],claves:[]}]}}],
   cpu:[{ms,fn}] }
 ```
 
@@ -147,6 +154,10 @@ En la escena de prueba (3 triángulos), `--sin-vsync` da ~300–480 fps p50 en l
 - **Peso transferido:** se desactiva la caché del navegador (`Network.setCacheDisabled`) para que dos corridas transfieran lo mismo.
 - **Errores de la página:** `pageerror` y `console.error` también van a `carga.errores` (máximo 30), no solo el timeout de `--listo`.
 - **`prueba.mjs`** también prueba `--sin-vsync` (p50 > 60 si la GPU no es por software) y `comparar x x`.
+
+## Por qué existe la v0.2
+
+En nov-2026 un gemelo digital industrial se congelaba de 3 a 58 s al mover la cámara: dos vehículos animados llevaban un `SpotLight` y se ocultaban con `visible = false`, y el modo de calidad Auto y las luces nocturnas también cambiaban el número de luces. Cada cambio recompilaba todos los shaders. La v0.1 no lo vio: medía 10 s con la cámara quieta, los vehículos tardan 2–4 min en dar la vuelta y las tareas largas solo salían resumidas. Para casos así: `--interactuar --dur 180`.
 
 ## Fuera de alcance v0.1
 

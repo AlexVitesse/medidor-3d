@@ -29,7 +29,40 @@ export function resumirPaso(c) {
     longTasks: resumirLongTasks(c.longTasks || []),
     gl: c.calls ? { calls: mediana(c.calls), tris: mediana(c.tris), callsMax: c.calls.length ? Math.max(...c.calls) : null, trisMax: c.tris.length ? Math.max(...c.tris) : null } : null,
     heapMB: c.heapMB || null, extra: c.extra ?? null,
+    // v2: cuándo pasó cada cosa (s desde el inicio del paso), para ligar un tirón con su causa
+    huecos: resumirHuecos(c.huecos || []),
+    longTasksT: [...(c.longTasksT || [])].sort((a, b) => b[1] - a[1]).slice(0, 10),
+    shaders: c.links == null && c.programas == null ? null : resumirShaders(c),
   };
+}
+
+/** Cuadros de más de 250 ms (tirones visibles): {n, maxMs, lista:[[t s, ms]] (los 10 más largos)}. */
+export function resumirHuecos(h) {
+  return { n: h.length, maxMs: h.length ? Math.max(...h.map((x) => x[1])) : 0, lista: [...h].sort((a, b) => b[1] - a[1]).slice(0, 10) };
+}
+
+/** Shaders durante el paso. Cualquier link después de la carga es una recompilación (con cualquier motor). */
+export function resumirShaders(c) {
+  const links = c.links || [], rc = c.recompilaciones || [];
+  // ráfagas: links a menos de 1 s uno del otro
+  const rafagas = [];
+  for (const t of links) { const u = rafagas[rafagas.length - 1]; if (u && t - u.fin <= 1) { u.fin = t; u.n++; } else rafagas.push({ t, fin: t, n: 1 }); }
+  return { links: links.length, programas: c.programas ?? null, rafagas: rafagas.map((r) => ({ t: r.t, n: r.n })), causas: rc.slice(0, 10) };
+}
+
+/** Avisos legibles: recompilaciones después de la carga y cuadros congelados (> 1 s). */
+export function alertas(r) {
+  const A = [];
+  for (const p of r.pasos || []) {
+    const s = p.shaders;
+    if (s?.links) {
+      const causa = (s.causas || []).flatMap((x) => x.luces).filter((v, i, a) => a.indexOf(v) === i);
+      A.push(`[${p.nombre}] ${s.links} shaders compilados después de la carga, en ${s.rafagas.length} ráfaga(s) (t = ${s.rafagas.slice(0, 5).map((x) => x.t + ' s').join(', ')})` +
+        (causa.length ? ` · cambió: ${causa.join('; ')}` : (s.causas || []).length ? ` · pista: ${s.causas[0].claves[0]}` : ''));
+    }
+    if (p.huecos?.maxMs > 1000) A.push(`[${p.nombre}] 3D congelado ${(p.huecos.maxMs / 1000).toFixed(1)} s (t = ${p.huecos.lista[0][0]} s); ${p.huecos.n} cuadro(s) de más de 250 ms`);
+  }
+  return A;
 }
 
 export const esSoftware = (gpu) => /swiftshader|llvmpipe|softpipe|software|basic render/i.test(gpu || '');
@@ -45,10 +78,16 @@ export function aMarkdown(r) {
     `| ${c.domContentLoadedMs} ms | ${c.loadMs} ms | ${c.listoMs} ms | ${c.peticiones} | ${kb(c.transferidoBytes)} | ${c.longTasks.n} / ${c.longTasks.totalMs} / ${c.longTasks.maxMs} |`);
   if (c.masPesados?.length) L.push('', 'Más pesados:', '', ...c.masPesados.map((m) => `- ${kb(m.bytes)} · ${m.url}`));
   if (c.errores?.length) L.push('', 'Errores:', '', ...c.errores.map((x) => `- ${x}`));
+  const al = alertas(r);
+  if (al.length) L.push('', '## Alertas', '', ...al.map((a) => `- ⚠ ${a}`));
   L.push('', '## Pasos', '', '| paso | s | cuadros | fps media | p50 | p5 | p1 | ms p50 | p95 | p99 | máx | long tasks | calls (máx) | tris (máx) | heap MB ini→fin |',
     '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|');
   for (const p of r.pasos) L.push(`| ${p.nombre} | ${p.durS} | ${p.cuadros} | ${p.fps.media} | ${p.fps.p50} | ${p.fps.p5} | ${p.fps.p1} | ${p.ms.p50} | ${p.ms.p95} | ${p.ms.p99} | ${p.ms.max} | ${p.longTasks.n} (${p.longTasks.totalMs} ms) | ${p.gl ? `${p.gl.calls} (${p.gl.callsMax})` : '–'} | ${p.gl ? `${p.gl.tris} (${p.gl.trisMax})` : '–'} | ${p.heapMB ? `${p.heapMB.ini}→${p.heapMB.fin}` : '–'} |`);
   for (const p of r.pasos) if (p.extra != null) L.push('', `Extra de \`${p.nombre}\`:`, '', '```json', JSON.stringify(p.extra).slice(0, 2000), '```');
+  for (const p of r.pasos) {
+    if (p.huecos?.n) L.push('', `Tirones de \`${p.nombre}\` (t s · ms): ${p.huecos.lista.map(([t, d]) => `${t}·${d}`).join(', ')}`);
+    if (p.shaders?.causas?.length) L.push('', `Recompilaciones de \`${p.nombre}\`:`, '', ...p.shaders.causas.map((x) => `- t ${x.t} s: +${x.nuevos} programas (total ${x.total})${x.luces.length ? ' · ' + x.luces.join('; ') : ''}${x.claves.length ? ' · ' + x.claves.join(' | ') : ''}`));
+  }
   if (r.cpu?.length) L.push('', '## CPU (tiempo propio)', '', '| ms | función |', '|---|---|', ...r.cpu.map((f) => `| ${f.ms} | \`${f.fn}\` |`));
   L.push('', '_Se mide la cadencia de requestAnimationFrame, no el tiempo de GPU._', '');
   return L.join('\n');
@@ -56,7 +95,7 @@ export function aMarkdown(r) {
 
 // métricas comparadas: [ruta, más es mejor]
 const METRICAS_PASO = [['fps.media', 1], ['fps.p50', 1], ['fps.p5', 1], ['fps.p1', 1], ['ms.p50', 0], ['ms.p95', 0], ['ms.p99', 0], ['ms.max', 0],
-  ['longTasks.n', 0], ['longTasks.totalMs', 0], ['gl.calls', 0], ['gl.tris', 0], ['heapMB.fin', 0]];
+  ['longTasks.n', 0], ['longTasks.totalMs', 0], ['huecos.n', 0], ['huecos.maxMs', 0], ['shaders.links', 0], ['gl.calls', 0], ['gl.tris', 0], ['heapMB.fin', 0]];
 const METRICAS_CARGA = [['listoMs', 0], ['loadMs', 0], ['peticiones', 0], ['transferidoBytes', 0], ['longTasks.totalMs', 0]];
 const leer = (o, ruta) => ruta.split('.').reduce((x, k) => x?.[k], o);
 // ponytail: umbral ingenuo del 5 %; correr A contra A para ver el ruido real antes de creerle a una diferencia chica.

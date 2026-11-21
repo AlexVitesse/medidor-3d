@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { percentil, resumirPaso, comparar, aMarkdown, esSoftware } from './lib.mjs';
+import { percentil, resumirPaso, comparar, aMarkdown, esSoftware, resumirHuecos, resumirShaders, alertas } from './lib.mjs';
 
 const AQUI = dirname(fileURLToPath(import.meta.url));
 
@@ -33,6 +33,15 @@ assert.ok(comparar(rep(60, 16), { ...rep(60, 16), entorno: { ...ent, gpu: 'H' } 
 assert.ok(esSoftware('ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)))') && esSoftware('llvmpipe (LLVM 15)') && !esSoftware('ANGLE (NVIDIA, NVIDIA GeForce RTX 5070 Ti)'));
 const md = aMarkdown({ url: 'u', fecha: 'f', entorno: { ...ent, plataforma: 'p', navegador: 'n', software: true }, carga: { longTasks: { n: 0 } }, pasos: [p] });
 assert.match(md, /GPU POR SOFTWARE/);
+// v2: tirones, ráfagas de shaders y alertas
+assert.deepEqual(resumirHuecos([[1, 300], [5, 2000]]), { n: 2, maxMs: 2000, lista: [[5, 2000], [1, 300]] });
+const sh = resumirShaders({ links: [1, 1.2, 1.9, 9], programas: 60, recompilaciones: [{ t: 1, nuevos: 3, total: 63, luces: ['SpotLight 1 → 2'], claves: [] }] });
+assert.deepEqual(sh.rafagas, [{ t: 1, n: 3 }, { t: 9, n: 1 }]);
+const al = alertas({ pasos: [{ nombre: 'orbitar', shaders: sh, huecos: resumirHuecos([[1.1, 11000]]) }] });
+assert.equal(al.length, 2);
+assert.match(al[0], /4 shaders .* 2 ráfaga.*SpotLight 1 → 2/);
+assert.match(al[1], /congelado 11\.0 s/);
+assert.deepEqual(alertas({ pasos: [{ nombre: 'x', shaders: resumirShaders({ links: [] }), huecos: resumirHuecos([]) }] }), []);
 console.log('unitaria: OK');
 
 // ---------------- integración
@@ -88,6 +97,16 @@ try {
       assert.ok(jk.carga.listoMs >= 2500, `CSP: listoMs ${jk.carga.listoMs}`);
       assert.deepEqual(jk.pasos[0].extra, { js: 7 }, 'CSP: --js/--extra');
       console.log(`  CSP sin unsafe-eval: listo ${jk.carga.listoMs} ms, sin errores`);
+      // v2: sin recompilar, 0 links tras la carga; con ?recompilar=1 y --interactuar, la alerta aparece
+      assert.equal(b.shaders.links, 0, 'links en la escena quieta');
+      assert.ok(j.carga.shaders.links >= 1, 'links de la carga');
+      const rc = await correr(url + '?recompilar=1', '--dur', '3', '--interactuar', '--salida', join(tmp, 'rc'));
+      assert.equal(rc.code, 0, rc.stderr);
+      const jr = JSON.parse(readFileSync(join(tmp, 'rc.json'), 'utf8'));
+      assert.ok(jr.pasos[0].shaders.links >= 1, `recompilar: links ${jr.pasos[0].shaders.links}`);
+      assert.match(rc.stderr, /ALERTA: \[base\] \d+ shaders compilados después de la carga/);
+      assert.match(readFileSync(join(tmp, 'rc.md'), 'utf8'), /## Alertas/);
+      console.log(`  ?recompilar=1 --interactuar: ${jr.pasos[0].shaders.links} links detectados, alerta OK`);
     }
   }
 } finally {
