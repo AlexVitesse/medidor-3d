@@ -159,6 +159,18 @@ En la escena de prueba (3 triángulos), `--sin-vsync` da ~300–480 fps p50 en l
 
 En nov-2026 un gemelo digital industrial se congelaba de 3 a 58 s al mover la cámara: dos vehículos animados llevaban un `SpotLight` y se ocultaban con `visible = false`, y el modo de calidad Auto y las luces nocturnas también cambiaban el número de luces. Cada cambio recompilaba todos los shaders. La v0.1 no lo vio: medía 10 s con la cámara quieta, los vehículos tardan 2–4 min en dar la vuelta y las tareas largas solo salían resumidas. Para casos así: `--interactuar --dur 180`.
 
+## Límites conocidos y pendientes (revisión externa, nov-2026)
+
+Se aceptan por ahora; se resolverán si un caso real los necesita.
+
+- **Cambios de menos de 0.5 s:** si una luz cambia, se dibuja y vuelve a su estado en menos de 0.5 s, se ve el link pero no la causa. *A futuro:* envolver `renderer.compile`/`getProgram` para guardar la firma en el momento exacto del link, no por muestreo.
+- **Escenas y capas:** la firma suma todas las escenas que vio `__THREE_DEVTOOLS__` (también las que no se dibujan) y no toma en cuenta `light.layers` ni `camera.layers`. Un cambio de capas puede recompilar sin causa visible. *A futuro:* firmar solo la escena y la cámara del último `render()`, filtrando por capas como hace three.
+- **Horas de las recompilaciones:** una recompilación lleva la hora en que se detectó, no la del link. Un link justo antes de `marcar()` puede salir en el paso siguiente, y uno al final del paso puede quedar sin causa. Además, las tareas largas se filtran por su hora de inicio y `marcar()` descarta el primer intervalo. *A futuro:* guardar la hora de cada link en el envoltorio de `linkProgram` y cerrar el paso con una última revisión antes de `leer()`.
+- **Ráfagas:** se redondea a décimas antes de agrupar, y una cadena continua de links forma una sola ráfaga aunque dure mucho. *A futuro:* agrupar con las horas sin redondear y partir las ráfagas de más de 5 s.
+- **Nombres:** "link", "programa nuevo" y "recompilación que congeló" se reportan como lo mismo, pero un link puede ser la primera vez que se dibuja un material, o una compilación asíncrona que no bloqueó. *A futuro:* marcar como "bloqueó" solo los links que coinciden con un hueco o una tarea larga.
+- **Coste:** la sonda recorre las escenas cada 0.5 s. No se ha medido su coste en escenas grandes. *A futuro:* medirlo con y sin sonda en el gemelo más pesado.
+- **Pruebas:** `prueba/escena.html?recompilar=1` recompila con un temporizador, no al mover el ratón, y no prueba el enganche de three. *A futuro:* una escena three que oculte un foco al arrastrar.
+
 ## Fuera de alcance v0.1
 
 `--rep N` con mediana, exit code por regresión, wrapper de ssh y trazas de GPU.
