@@ -175,5 +175,5 @@ else {
   writeFileSync(`${base}.md`, aMarkdown(reporte));
   log(`→ ${base}.json / .md`);
   for (const p of resultados) log(`${p.nombre}: fps p50 ${p.fps.p50} · p1 ${p.fps.p1} · ms p99 ${p.ms.p99} · calls ${p.gl?.calls ?? '–'} · tris ${p.gl?.tris ?? '–'}`);
-  for (const a of alertas(reporte)) log(rojo(`ALERTA: ${a}`));
 }
+for (const a of alertas(reporte)) log(rojo(`ALERTA: ${a}`)); // también con --salida - (log va a stderr)

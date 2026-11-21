@@ -2,6 +2,12 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 
+## [0.2.1] - 2026-11-20
+
+### Corregido
+- La sonda perdía la causa de una recompilación si revisaba entre el cambio de luz y el render: la firma base ahora es la de la última compilación.
+- Las alertas también salen en stderr con `--salida -`.
+
 ## [0.2.0] - 2026-11-20
 
 ### Agregado

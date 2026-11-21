@@ -67,7 +67,9 @@
       S.recomp.push({ t: performance.now(), nuevos: nuevos.length, total: progs.length, luces: cambios(T.firma, f), claves: [...new Set(dif)] });
     }
     for (const k of nuevos) T.claves.push(k.split(','));
-    T.nProg = progs.length; T.firma = f;
+    // la base es la firma de la última compilación: la revisión puede caer entre el cambio de luz y el render que compila
+    if (nuevos.length || !T.nProg) T.firma = f;
+    T.nProg = progs.length;
   }, 500);
 
   const cuadro = (ts) => {
