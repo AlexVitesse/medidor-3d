@@ -25,7 +25,7 @@ node medidor.mjs comparar a.json b.json [--md comparacion.md]
 
 | opción | qué hace |
 |---|---|
-| `--listo "<expr>"` | expresión JS que dice cuándo terminó de cargar. Sin ella: evento `load` + 2 s. Máximo 120 s; si se pasa, se anota en `carga.errores` y la medición sigue. |
+| `--listo "<expr>"` | expresión JS que dice cuándo terminó de cargar. Sin ella: evento `load` + 2 s. Máximo 120 s; si se pasa, se anota en `carga.errores` y la medición sigue. Si la expresión lanza un error, se anota el error real (`[listo] error: …`), no un falso "no se cumplió". |
 | `--js "<código>"` | se evalúa una vez, tras la carga y antes de calentar. |
 | `--calentar 3` | segundos de espera antes del primer paso (compilación de shaders, texturas). |
 | `--dur 10` | segundos de medición por paso (un paso puede sobrescribirlo). |
@@ -48,12 +48,14 @@ node medidor.mjs comparar a.json b.json [--md comparacion.md]
 
 ## Qué mide y cómo
 
-- **Cuadros:** rAF propio. `fps.p50 = 1000 / ms.p50`, `fps.p5 = 1000 / ms.p95`, `fps.p1 = 1000 / ms.p99`. Percentil por rango más cercano.
+- **Cuadros:** rAF propio. `fps.p50 = 1000 / ms.p50`, `fps.p5 = 1000 / ms.p95`, `fps.p1 = 1000 / ms.p99`. Percentil por rango más cercano. Los tiempos de rAF tienen resolución de ~0.1 ms: un intervalo de 0 cuenta como 0.1 ms, así que el tope es 10000 fps.
 - **Long tasks:** `PerformanceObserver({type: 'longtask', buffered: true})`; las de la carga son las anteriores a `listo`.
 - **Draw calls y triángulos:** wrappers sobre `drawArrays`, `drawElements`, `drawArraysInstanced`, `drawElementsInstanced` y `drawRangeElements` de WebGL1 y WebGL2. Triángulos: n/3 en TRIANGLES, n−2 en STRIP/FAN, por el número de instancias. Se reporta la **mediana por cuadro** (`calls`, `tris`) y el **máximo** (`callsMax`, `trisMax`). No cuenta `WEBGL_multi_draw` ni `ANGLE_instanced_arrays`.
 - **Peso:** CDP `Network.loadingFinished.encodedDataLength` hasta `listo`, con la caché del navegador desactivada. Total, número de peticiones y las 10 más pesadas.
 - **Heap JS:** CDP `HeapProfiler.collectGarbage` + `Runtime.getHeapUsage`, al inicio y al final de cada paso.
 - **GPU:** `UNMASKED_RENDERER_WEBGL`. Si dice SwiftShader, llvmpipe o similar, `entorno.software = true` y el reporte muestra un aviso.
+
+**CSP:** el contexto se abre con `bypassCSP: true`. `--listo`, `--js`, `--extra` y el `js` de los pasos se evalúan como texto dentro de la página, y una CSP sin `'unsafe-eval'` los rompería. La CSP de la página no se aplica durante la medición.
 
 **Límite:** se mide la cadencia de `requestAnimationFrame`, no el tiempo de GPU. Para tiempo de GPU por cuadro, combinar con
 [stats-gl](https://github.com/RenaudRohlinger/stats-gl); para ver qué hay dentro de un cuadro, [Spector.js](https://spector.babylonjs.com/).

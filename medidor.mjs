@@ -68,7 +68,8 @@ try {
   process.exit(2);
 }
 
-const ctx = await browser.newContext({ viewport: { width: ancho, height: alto }, deviceScaleFactor: dpr });
+// bypassCSP: --listo/--js/--extra se evalúan como string (eval en la página); una CSP sin 'unsafe-eval' los rompería.
+const ctx = await browser.newContext({ viewport: { width: ancho, height: alto }, deviceScaleFactor: dpr, bypassCSP: true });
 const sonda = readFileSync(join(AQUI, 'sonda.js'), 'utf8');
 await ctx.addInitScript({ content: `window.__medidorCfg = ${JSON.stringify({ sinGl: !!o['sin-gl'] })};\n${sonda}` });
 const page = await ctx.newPage();
@@ -91,7 +92,8 @@ const extra = () => (o.extra ? page.evaluate(`(() => { const v = (${o.extra}); r
 log(`abriendo ${url}`);
 try { await page.goto(url, { waitUntil: 'load', timeout: LIMITE }); } catch (e) { errores.push(`[goto] ${e.message.split('\n')[0]}`); }
 if (o.listo) {
-  await page.waitForFunction(o.listo, null, { timeout: LIMITE, polling: 100 }).catch(() => errores.push(`[listo] no se cumplió en ${LIMITE / 1000} s: ${o.listo}`));
+  await page.waitForFunction(o.listo, null, { timeout: LIMITE, polling: 100 }).catch((e) => errores.push(e.name === 'TimeoutError'
+    ? `[listo] no se cumplió en ${LIMITE / 1000} s: ${o.listo}` : `[listo] error: ${e.message.split('\n')[0]}`));
 } else await page.waitForTimeout(2000);
 const listoMs = await page.evaluate(() => performance.now());
 const nav = await page.evaluate(() => { const e = performance.getEntriesByType('navigation')[0]; return e ? { dcl: e.domContentLoadedEventEnd, load: e.loadEventEnd } : {}; });

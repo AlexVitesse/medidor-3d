@@ -19,6 +19,7 @@ assert.equal(percentil([7], 1), 7);
 const p = resumirPaso({ nombre: 'x', durS: 1, ms: Array(60).fill(16.67), calls: [3, 3, 3], tris: [3, 3, 3], longTasks: [] });
 assert.ok(Math.abs(p.fps.p50 - 60) < 0.5, `p50 ${p.fps.p50}`);
 assert.deepEqual(p.gl, { calls: 3, tris: 3, callsMax: 3, trisMax: 3 });
+assert.equal(resumirPaso({ nombre: 'y', ms: [0, 0, 0.1] }).fps.p50, 10000, 'intervalo 0 (bajo la resolución de rAF): tope, no null');
 const ent = { gpu: 'G', viewport: [1, 1], dpr: 1, vsync: true, software: false };
 const rep = (fps, ms) => ({ entorno: ent, carga: {}, pasos: [{ nombre: 'base', fps: { p50: fps }, ms: { p50: ms } }] });
 const c = comparar(rep(60, 16), rep(90, 20));
@@ -37,14 +38,16 @@ console.log('unitaria: OK');
 // ---------------- integración
 const tmp = mkdtempSync(join(tmpdir(), 'medidor-'));
 const srv = createServer((req, res) => {
-  const f = join(AQUI, 'prueba', new URL(req.url, 'http://x').pathname.replace(/^\/+/, '') || 'escena.html');
+  // /csp/... sirve lo mismo con una CSP sin 'unsafe-eval' (como muchos servidores reales)
+  const ruta = new URL(req.url, 'http://x').pathname, csp = ruta.startsWith('/csp/');
+  const f = join(AQUI, 'prueba', ruta.replace(/^\/(csp\/)?/, '') || 'escena.html');
   if (!f.startsWith(join(AQUI, 'prueba')) || !existsSync(f)) { res.writeHead(404).end(); return; }
-  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(readFileSync(f));
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', ...(csp && { 'content-security-policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'" }) }).end(readFileSync(f));
 });
 await new Promise((r) => srv.listen(0, '127.0.0.1', r));
 const url = `http://127.0.0.1:${srv.address().port}/escena.html`;
 
-const correr = (...a) => new Promise((r) => execFile(process.execPath, [join(AQUI, 'medidor.mjs'), url, '--dur', '2', '--calentar', '1', '--listo', 'window.__listo', ...a],
+const correr = (...a) => new Promise((r) => execFile(process.execPath, [join(AQUI, 'medidor.mjs'), a[0]?.startsWith('http') ? a.shift() : url, '--dur', '2', '--calentar', '1', '--listo', 'window.__listo', ...a],
   { timeout: 180000 }, (err, stdout, stderr) => r({ code: err ? err.code ?? 1 : 0, stdout, stderr })));
 
 let omitida = null;
@@ -77,6 +80,14 @@ try {
       console.log(`  --sin-vsync: fps p50 ${jv.pasos[0].fps.p50}`);
       if (!jv.entorno.software) assert.ok(jv.pasos[0].fps.p50 > 60, `--sin-vsync p50 ${jv.pasos[0].fps.p50}`);
       assert.equal(jv.entorno.vsync, false);
+      // CSP estricta: --listo (falso en la 1.ª evaluación), --js y --extra deben funcionar igual
+      const k = await correr(url.replace('/escena.html', '/csp/escena.html'), '--listo', 'performance.now() > 2500', '--js', 'window.__js = 7', '--extra', '({ js: window.__js })', '--salida', '-');
+      assert.equal(k.code, 0, k.stderr);
+      const jk = JSON.parse(k.stdout);
+      assert.deepEqual(jk.carga.errores.filter((e) => /^\[(listo|--js)\]/.test(e)), [], 'CSP: errores');
+      assert.ok(jk.carga.listoMs >= 2500, `CSP: listoMs ${jk.carga.listoMs}`);
+      assert.deepEqual(jk.pasos[0].extra, { js: 7 }, 'CSP: --js/--extra');
+      console.log(`  CSP sin unsafe-eval: listo ${jk.carga.listoMs} ms, sin errores`);
     }
   }
 } finally {

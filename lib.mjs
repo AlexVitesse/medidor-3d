@@ -20,7 +20,8 @@ export const resumirLongTasks = (dur) => ({ n: dur.length, totalMs: r1(dur.reduc
  */
 export function resumirPaso(c) {
   const ms = c.ms || [], media = ms.length ? ms.reduce((s, x) => s + x, 0) / ms.length : null;
-  const p50 = percentil(ms, 50), p95 = percentil(ms, 95), p99 = percentil(ms, 99), fps = (x) => (x ? r1(1000 / x) : null);
+  // ponytail: rAF da tiempos con resolución de ~0.1 ms; un intervalo de 0 (miles de fps sin vsync) se cuenta como 0.1 ms → tope de 10000 fps.
+  const p50 = percentil(ms, 50), p95 = percentil(ms, 95), p99 = percentil(ms, 99), fps = (x) => (x == null ? null : r1(1000 / Math.max(x, 0.1)));
   return {
     nombre: c.nombre, durS: r1(c.durS), cuadros: ms.length,
     fps: { media: fps(media), p50: fps(p50), p5: fps(p95), p1: fps(p99) },

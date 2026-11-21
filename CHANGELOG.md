@@ -2,6 +2,16 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 
+## [0.1.1] - 2026-11-20
+
+### Corregido
+- `--listo`, `--js`, `--extra` y los `js` de los pasos fallaban en páginas con CSP sin `'unsafe-eval'`: `--listo` se reportaba como "no se cumplió en 120 s" aunque fallaba en ~0.3 s, y se medía la pantalla de carga. El contexto de Playwright ahora usa `bypassCSP: true`.
+- Con miles de fps (sin vsync en una GPU rápida) los intervalos de rAF valen 0 y `fps.p50` salía `null`. Ahora un intervalo de 0 cuenta como 0.1 ms (la resolución de rAF), con tope de 10000 fps.
+- `--listo` anota el error real en `carga.errores` (`[listo] error: …`) cuando no es un timeout.
+
+### Pruebas
+- `prueba.mjs` sirve la escena también con una CSP estricta (`/csp/`) y comprueba `--listo` (falso en la primera evaluación), `--js` y `--extra`.
+
 ## [0.1.0] - 2026-11-20
 
 ### Agregado
