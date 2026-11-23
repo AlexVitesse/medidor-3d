@@ -2,6 +2,16 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 
+## [0.4.1] - 2026-11-23
+
+### Corregido (auditoría externa)
+- A/B: un paso sin cuadros medidos (fps vacío) contaba como 0 fps y daba "b peor". Ahora el par se descarta y se avisa.
+- A/B: la alerta de draw calls distingue dos casos:
+  - las A vecinas difieren entre sí: la escena cambió sola;
+  - solo B dibuja distinto: puede ser el efecto de la variante (LOD, calidad).
+- `--repetir`: si la primera corrida traía un valor vacío, se perdían los de las demás.
+- `--pasos` exige nombres únicos, porque los rangos y `comparar` se emparejan por nombre.
+
 ## [0.4.0] - 2026-11-23
 
 Motivo: en la migración del hotel, los pasos seguidos daban fps distintos con cualquier ajuste (también en r160) porque la escena cambiaba sola. Con eso casi se concluye que el radio de sombra bajaba los fps.
