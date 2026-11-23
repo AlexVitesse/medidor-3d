@@ -65,6 +65,7 @@ const reps = Math.max(1, Math.round(n('repetir'))), nCongelar = o['congelar-cuad
 const congelar = o.congelar != null || nCongelar != null; // con cualquiera de los dos, las capturas salen de su propia pasada
 let pasos = o.pasos ? JSON.parse(readFileSync(o.pasos, 'utf8')) : [{ nombre: 'base' }];
 const nombrePaso = (p, i) => p.nombre || `paso${i + 1}`;
+{ const ns = pasos.map(nombrePaso), rep = ns.find((x, i) => ns.indexOf(x) !== i); if (rep) { log(`--pasos: el nombre "${rep}" se repite; cada paso necesita un nombre distinto (rangos y comparar se emparejan por nombre)`); process.exit(1); } }
 // --ab N (v0.4): los dos últimos pasos son la variante A y la B; los anteriores corren una vez (preparación). Se intercalan
 // A#1 B#1 A#2 … B#N A#N+1 y cada B se compara con sus dos A vecinas: una escena que cambia sola no se confunde con la variante.
 let AB = null;

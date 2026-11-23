@@ -17,7 +17,7 @@ export const medianaReal = (v) => { const o = [...v].sort((a, b) => a - b), k = 
 
 // mediana por hoja numérica; rango[ruta] = [mín, máx]. Listas y textos: los de la primera corrida.
 function agregar(vals, ruta, rango) {
-  const a = vals[0];
+  const a = vals.find((x) => x != null) ?? vals[0]; // el tipo lo decide el primer valor presente: una corrida sin dato no borra las demás
   if (typeof a === 'number') {
     const v = vals.filter(Number.isFinite);
     if (!v.length) return a;
@@ -52,28 +52,37 @@ export const DERIVA_MAX = 20; // % — más que esto y los fps del paso dependen
  * una escena que cambia sola con el tiempo pesa igual en los dos lados. `corridas` = lista de listas de pasos (una por corrida).
  */
 export function resumirAB(corridas, a, b) {
-  const pares = [];
+  const pares = []; let invalidos = 0;
   for (const [ci, pasos] of corridas.entries()) {
     const por = Object.fromEntries(pasos.map((p) => [p.nombre, p]));
     for (let i = 1; por[`${b}#${i}`]; i++) {
       const A1 = por[`${a}#${i}`], A2 = por[`${a}#${i + 1}`], B = por[`${b}#${i}`];
       if (!A1 || !A2) continue;
-      const m = (f) => (f(A1) + f(A2)) / 2, fpsA = m((p) => p.fps.p50), callsA = B.gl && A1.gl && A2.gl ? m((p) => p.gl.calls) : null;
+      const ok = (x) => Number.isFinite(x) && x > 0;
+      if (![A1, A2, B].every((p) => ok(p.fps?.p50))) { invalidos++; continue; } // sin cuadros medidos: no es "0 fps"
+      const m = (f) => (f(A1) + f(A2)) / 2, fpsA = m((p) => p.fps.p50);
+      const conCalls = [A1, A2, B].every((p) => ok(p.gl?.calls)), callsA = conCalls ? m((p) => p.gl.calls) : null;
       pares.push({ corrida: ci + 1, i, fpsA: r1(fpsA), fpsB: B.fps.p50, dFps: r1((100 * (B.fps.p50 - fpsA)) / fpsA),
-        callsA: r1(callsA), callsB: B.gl?.calls ?? null, dCalls: callsA ? r1((100 * (B.gl.calls - callsA)) / callsA) : null,
+        callsA: r1(callsA), callsB: conCalls ? B.gl.calls : null, dCalls: conCalls ? r1((100 * (B.gl.calls - callsA)) / callsA) : null,
         // las dos A vecinas entre sí: si difieren mucho, la escena cambió en medio y el par vale poco
-        dEntreA: r1((100 * Math.abs(A2.fps.p50 - A1.fps.p50)) / fpsA) });
+        dEntreA: r1((100 * Math.abs(A2.fps.p50 - A1.fps.p50)) / fpsA),
+        dCallsEntreA: conCalls ? r1((100 * Math.abs(A2.gl.calls - A1.gl.calls)) / callsA) : null });
     }
   }
   const ds = pares.map((x) => x.dFps), d = mediana(ds), ruidoA = mediana(pares.map((x) => x.dEntreA));
   const signo = ds.length && ds.every((x) => x > 0) ? 1 : ds.length && ds.every((x) => x < 0) ? -1 : 0;
-  return { a, b, pares, dFps: r1(d), ruidoA: r1(ruidoA),
+  return { a, b, pares, invalidos, dFps: r1(d), ruidoA: r1(ruidoA),
     veredicto: !pares.length ? 'sin pares' : signo && Math.abs(d) > Math.max(5, ruidoA) ? (signo > 0 ? `${b} mejor` : `${b} peor`) : 'sin diferencia clara' };
 }
 
 export function alertasAB(ab) {
-  const A = [], malos = ab.pares.filter((x) => x.dCalls != null && Math.abs(x.dCalls) > DERIVA_MAX);
-  if (malos.length) A.push(`[A/B] en ${malos.length} de ${ab.pares.length} pares los draw calls de ${ab.b} difieren más de ${DERIVA_MAX} % de sus A vecinas (p. ej. ${malos[0].callsA} → ${malos[0].callsB}): la escena cambió y esa diferencia de fps no es de la variante`);
+  const A = [];
+  if (ab.invalidos) A.push(`[A/B] ${ab.invalidos} par(es) descartado(s) por pasos sin cuadros medidos (fps vacío)`);
+  // si las A vecinas difieren entre sí en draw calls, la escena cambió sola; si solo B difiere, puede ser la propia variante (LOD, calidad…)
+  const escena = ab.pares.filter((x) => x.dCallsEntreA != null && x.dCallsEntreA > DERIVA_MAX);
+  if (escena.length) A.push(`[A/B] en ${escena.length} de ${ab.pares.length} pares las A vecinas difieren más de ${DERIVA_MAX} % en draw calls: la escena cambió sola durante la prueba y esos pares no son confiables`);
+  const soloB = ab.pares.filter((x) => x.dCalls != null && Math.abs(x.dCalls) > DERIVA_MAX && !(x.dCallsEntreA > DERIVA_MAX));
+  if (soloB.length) A.push(`[A/B] ${ab.b} dibuja distinto que sus A vecinas (draw calls ${soloB[0].callsA} → ${soloB[0].callsB}): si la variante no debería cambiar lo que se dibuja, la escena cambió; si sí (LOD, calidad), es parte de su efecto`);
   if (ab.ruidoA > 15) A.push(`[A/B] las A vecinas difieren ${ab.ruidoA} % entre sí: la escena no está estable; calienta más (espera) o congela la simulación`);
   return A;
 }

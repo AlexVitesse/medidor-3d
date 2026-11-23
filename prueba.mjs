@@ -56,7 +56,13 @@ assert.equal(ab1.pares[0].dFps, 0); assert.equal(ab1.veredicto, 'sin diferencia 
 const ab2 = resumirAB([[pab('a#1', 40, 100), pab('b#1', 30, 100), pab('a#2', 40, 100), pab('b#2', 31, 100), pab('a#3', 40, 100)]], 'a', 'b');
 assert.equal(ab2.veredicto, 'b peor'); assert.equal(ab2.pares.length, 2);
 const ab3 = resumirAB([[pab('a#1', 40, 100), pab('b#1', 30, 200), pab('a#2', 40, 100)]], 'a', 'b');
-assert.match(alertasAB(ab3)[0], /draw calls de b difieren/);
+assert.match(alertasAB(ab3)[0], /b dibuja distinto que sus A vecinas/, 'solo B cambia: puede ser la variante');
+const ab4 = resumirAB([[pab('a#1', 40, 100), pab('b#1', 40, 150), pab('a#2', 40, 200)]], 'a', 'b');
+assert.match(alertasAB(ab4).join(' '), /la escena cambió sola/, 'las A vecinas difieren: escena inestable');
+const ab5 = resumirAB([[pab('a#1', 60, 100), { nombre: 'b#1', fps: { p50: null }, gl: null }, pab('a#2', 60, 100)]], 'a', 'b');
+assert.equal(ab5.pares.length, 0); assert.equal(ab5.invalidos, 1); assert.equal(ab5.veredicto, 'sin pares', 'fps vacío no es 0 fps');
+const agN = agregarCorridas([{ carga: { listoMs: 1 }, pasos: [{ nombre: 'x', fps: { p50: null }, gl: null }] }, { carga: { listoMs: 2 }, pasos: [{ nombre: 'x', fps: { p50: 60 }, gl: { calls: 100 } }] }]);
+assert.equal(agN.pasos[0].fps.p50, 60, "una corrida sin dato no borra las demás"); assert.equal(agN.pasos[0].gl.calls, 100);
 assert.equal(medianaReal([1, 2]), 1.5);
 const corr = (fps, listo) => ({ carga: { listoMs: listo, errores: ['e'] }, pasos: [{ nombre: 'base', fps: { p50: fps }, huecos: { n: 0, lista: [] } }] });
 const ag = agregarCorridas([corr(40, 100), corr(50, 300), corr(45, 200)]);
