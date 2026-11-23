@@ -2,12 +2,12 @@
 // Si no hay Chrome o WebGL, la integración se marca OMITIDA y la unitaria cuenta igual.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { percentil, resumirPaso, comparar, aMarkdown, esSoftware, resumirHuecos, resumirShaders, alertas } from './lib.mjs';
+import { percentil, resumirPaso, comparar, comparacionMd, aMarkdown, esSoftware, resumirHuecos, resumirShaders, alertas, medianaReal, agregarCorridas, leerPng, escribirPng, compararCapturas } from './lib.mjs';
 
 const AQUI = dirname(fileURLToPath(import.meta.url));
 
@@ -42,6 +42,37 @@ assert.equal(al.length, 2);
 assert.match(al[0], /4 shaders .* 2 ráfaga.*SpotLight 1 → 2/);
 assert.match(al[1], /congelado 11\.0 s/);
 assert.deepEqual(alertas({ pasos: [{ nombre: 'x', shaders: resumirShaders({ links: [] }), huecos: resumirHuecos([]) }] }), []);
+// v3: --repetir (mediana y rango) y comparar con ruido
+assert.equal(medianaReal([3, 1, 2]), 2);
+assert.equal(medianaReal([1, 2]), 1.5);
+const corr = (fps, listo) => ({ carga: { listoMs: listo, errores: ['e'] }, pasos: [{ nombre: 'base', fps: { p50: fps }, huecos: { n: 0, lista: [] } }] });
+const ag = agregarCorridas([corr(40, 100), corr(50, 300), corr(45, 200)]);
+assert.equal(ag.pasos[0].fps.p50, 45);
+assert.deepEqual(ag.rango['base.fps.p50'], [40, 50]);
+assert.deepEqual(ag.rango['carga.listoMs'], [100, 300]);
+assert.deepEqual(ag.carga.errores, ['e'], 'listas: las de la corrida 1');
+const conRuido = (fps, g) => ({ ...rep(fps, 16), repeticiones: 3, rango: { 'base.fps.p50': g } });
+// Δ −6.7 %: con una corrida es "peor"; si el ruido de A es 22 %, es "≈"
+assert.equal(comparar(rep(45, 16), rep(42, 16)).filas.find((x) => x.metrica === 'base.fps.p50').veredicto, 'peor');
+const cr = comparar(conRuido(45, [40, 50]), conRuido(42, [41, 43])), fr = cr.filas.find((x) => x.metrica === 'base.fps.p50');
+assert.equal(fr.veredicto, '≈');
+assert.equal(fr.ruido, 22.2);
+assert.equal(comparar(conRuido(45, [44, 46]), conRuido(30, [29, 31])).filas.find((x) => x.metrica === 'base.fps.p50').veredicto, 'peor', 'Δ fuera del ruido');
+assert.match(comparacionMd({ ...rep(45, 16), fecha: 'f' }, { ...rep(42, 16), fecha: 'f' }, comparar(rep(45, 16), rep(42, 16))), /una corrida: sin estimación de ruido/);
+assert.match(comparacionMd({ ...conRuido(45, [40, 50]), fecha: 'f' }, { ...conRuido(42, [41, 43]), fecha: 'f' }, cr), /\| 45 \[40–50\] \| 42 \[41–43\] \| -6\.7 \| 22\.2 \| ≈ \|/);
+// v3: PNG y comparar capturas
+const px = Uint8Array.from({ length: 3 * 2 * 4 }, (_, i) => (i * 37) % 256);
+assert.deepEqual(leerPng(escribirPng(3, 2, px)), { ancho: 3, alto: 2, rgba: px }, 'PNG ida y vuelta');
+const png16 = escribirPng(1, 1, new Uint8Array(4)); png16[24] = 16; // bit depth del IHDR
+assert.throws(() => leerPng(png16), /no soportado \(16 bits/);
+const gris = (v) => escribirPng(4, 4, new Uint8Array(64).map((_, i) => (i % 4 === 3 ? 255 : v)));
+assert.equal(compararCapturas(gris(100), gris(100)).total.delta, 0);
+const cc = compararCapturas(gris(100), gris(120), { zonas: { arriba: [0, 0, 1, 0.5] }, diff: true });
+assert.equal(cc.total.delta, 20);
+assert.equal(cc.total.difierenPct, 100);
+assert.deepEqual(cc.zonas[0].caja, [0, 0, 4, 2], 'zona en fracciones');
+assert.equal(leerPng(cc.diffPng).ancho, 4);
+assert.throws(() => compararCapturas(gris(1), escribirPng(2, 2, new Uint8Array(16))), /tamaños distintos/);
 console.log('unitaria: OK');
 
 // ---------------- integración
@@ -107,6 +138,55 @@ try {
       assert.match(rc.stderr, /ALERTA: \[base\] \d+ shaders compilados después de la carga/);
       assert.match(readFileSync(join(tmp, 'rc.md'), 'utf8'), /## Alertas/);
       console.log(`  ?recompilar=1 --interactuar: ${jr.pasos[0].shaders.links} links detectados, alerta OK`);
+      // v3: --repetir 2 → corridas, mediana y rango; comparar marca ≈ y no avisa "una corrida"
+      const rp = await correr('--repetir', '2', '--dur', '1', '--salida', join(tmp, 'rep'));
+      assert.equal(rp.code, 0, rp.stderr);
+      const jp = JSON.parse(readFileSync(join(tmp, 'rep.json'), 'utf8'));
+      assert.equal(jp.version, 3);
+      assert.equal(jp.repeticiones, 2);
+      assert.equal(jp.corridas.length, 2);
+      const g = jp.rango['base.fps.p50'], vals = jp.corridas.map((x) => x.pasos[0].fps.p50);
+      assert.deepEqual(g, [Math.min(...vals), Math.max(...vals)]);
+      assert.ok(jp.pasos[0].fps.p50 >= g[0] && jp.pasos[0].fps.p50 <= g[1], 'mediana dentro del rango');
+      assert.match(readFileSync(join(tmp, 'rep.md'), 'utf8'), /Repeticiones: 2/);
+      const cmd = comparacionMd(jp, jp, comparar(jp, jp));
+      assert.doesNotMatch(cmd, /una corrida/);
+      assert.ok(comparar(jp, jp).filas.every((x) => x.veredicto === '≈' || x.veredicto === '?'));
+      console.log(`  --repetir 2: fps p50 ${vals.join(' / ')} → mediana ${jp.pasos[0].fps.p50}`);
+      // v3: congelado genérico, dos pasadas con dos pasos → capturas idénticas por paso
+      writeFileSync(join(tmp, 'pasos.json'), JSON.stringify([{ nombre: 'a', dur: 0.5 }, { nombre: 'b', dur: 0.5, js: "document.body.style.background = '#225'" }]));
+      for (const k of [1, 2]) {
+        const cz = await correr('--dur', '0.5', '--calentar', '0', '--pasos', join(tmp, 'pasos.json'), '--congelar-cuadros', '30', '--captura', join(tmp, `cg${k}.png`), '--salida', join(tmp, `cg${k}`));
+        assert.equal(cz.code, 0, cz.stderr);
+        const cap = JSON.parse(readFileSync(join(tmp, `cg${k}.json`), 'utf8')).capturas;
+        assert.deepEqual(cap.archivos, [join(tmp, `cg${k}-a.png`), join(tmp, `cg${k}-b.png`)]);
+        assert.deepEqual(cap.errores.filter((e) => /congelar/.test(e)), [], 'errores del congelado');
+      }
+      const ca = compararCapturas(readFileSync(join(tmp, 'cg1-a.png')), readFileSync(join(tmp, 'cg2-a.png'))).total;
+      const cb = compararCapturas(readFileSync(join(tmp, 'cg1-b.png')), readFileSync(join(tmp, 'cg2-b.png'))).total;
+      assert.ok(ca.difierenPct < 0.1 && Math.abs(ca.delta) < 0.1, `congelado paso a: ${JSON.stringify(ca)}`);
+      assert.ok(cb.difierenPct < 0.1 && Math.abs(cb.delta) < 0.1, `congelado paso b: ${JSON.stringify(cb)}`);
+      assert.ok(compararCapturas(readFileSync(join(tmp, 'cg1-a.png')), readFileSync(join(tmp, 'cg1-b.png'))).total.difierenPct > 50, 'cada paso con su escena');
+      console.log(`  --congelar-cuadros 30: dos pasadas difieren ${ca.difierenPct} % / ${cb.difierenPct} % de píxeles`);
+      // v3: comparar-capturas por CLI: contra sí misma Δ 0; contra una versión aclarada, Δ > 0; zonas y diff
+      const P = leerPng(readFileSync(join(tmp, 'cg1-a.png')));
+      writeFileSync(join(tmp, 'clara.png'), escribirPng(P.ancho, P.alto, P.rgba.map((v, i) => (i % 4 === 3 ? v : Math.min(255, Math.round(v * 1.2 + 10))))));
+      writeFileSync(join(tmp, 'zonas.json'), JSON.stringify({ izquierda: [0, 0, 0.5, 1], derecha: [0.5, 0, 0.5, 1] }));
+      const cli = (...a) => new Promise((r) => execFile(process.execPath, [join(AQUI, 'medidor.mjs'), 'comparar-capturas', ...a], (err, stdout, stderr) => r({ code: err ? err.code ?? 1 : 0, stdout, stderr })));
+      const igual = await cli(join(tmp, 'cg1-a.png'), join(tmp, 'cg1-a.png'));
+      assert.equal(igual.code, 0, igual.stderr);
+      assert.match(igual.stdout, /\| total \| ([\d.]+) \| \1 \| 0 \| 0 \|/);
+      const cl = await cli(join(tmp, 'cg1-a.png'), join(tmp, 'clara.png'), '--zonas', join(tmp, 'zonas.json'), '--diff', join(tmp, 'diff.png'), '--md', join(tmp, 'cap.md'));
+      assert.equal(cl.code, 0, cl.stderr);
+      const dl = Number(cl.stdout.match(/\| total \| [\d.]+ \| [\d.]+ \| ([\d.-]+) \|/)[1]);
+      assert.ok(dl > 15, `aclarada: Δ ${dl}`);
+      assert.match(cl.stdout, /\| izquierda \[0, 0, 800, 900\]/);
+      assert.equal(leerPng(readFileSync(join(tmp, 'diff.png'))).ancho, 1600);
+      assert.ok(existsSync(join(tmp, 'cap.md')));
+      const mal = await cli(join(tmp, 'cg1-a.png'), join(tmp, 'zonas.json'));
+      assert.equal(mal.code, 1);
+      assert.match(mal.stderr, /no es un PNG/);
+      console.log(`  comparar-capturas: sí misma Δ 0; aclarada Δ +${dl} %`);
     }
   }
 } finally {

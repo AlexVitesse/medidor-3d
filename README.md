@@ -19,8 +19,10 @@ node prueba.mjs          # unitaria + integración con Chrome
 ```
 node medidor.mjs <url> [--etiqueta x] [--dur 10] [--calentar 3] [--listo "<expr>"] [--js "<código>"]
      [--pasos pasos.json] [--interactuar] [--ancho 1600 --alto 900 --dpr 1] [--sin-vsync] [--visible] [--sin-gl]
-     [--chrome <ruta>] [--angle <backend>] [--extra "<expr>"] [--cpu 25] [--captura fin.png] [--salida reportes/x | -]
+     [--chrome <ruta>] [--angle <backend>] [--extra "<expr>"] [--cpu 25] [--repetir 3]
+     [--captura fin.png [--congelar "<expr>"] [--congelar-cuadros 120]] [--salida reportes/x | -]
 node medidor.mjs comparar a.json b.json [--md comparacion.md]
+node medidor.mjs comparar-capturas a.png b.png [--zonas zonas.json] [--umbral 10] [--diff diff.png] [--md salida.md]
 ```
 
 | opción | qué hace |
@@ -39,8 +41,52 @@ node medidor.mjs comparar a.json b.json [--md comparacion.md]
 | `--chrome <ruta>` | ejecutable de Chrome/Chromium. También la variable `CHROME`. Sin ninguno: `channel: 'chrome'` (el Chrome instalado). |
 | `--angle <backend>` | sustituye el backend ANGLE por defecto. |
 | `--salida x` | escribe `x.json` y `x.md`. Por defecto `reportes/<host>-<AAAAMMDD-HHMM>`. Con `-` el JSON va a stdout y los mensajes a stderr. |
+| `--repetir N` | (v0.3) corre la medición completa N veces, cada una en un **navegador nuevo** (perfil temporal limpio: sin caché HTTP ni de shaders, sin calentamiento heredado). El JSON trae las N corridas, y `carga`/`pasos` pasan a ser la **mediana** de cada métrica, con su `[mín, máx]` en `rango`. El `.md` muestra `mediana [mín–máx]`. Sin `--repetir`, el JSON es igual al de la 0.2 (solo cambia `version`). |
+| `--captura x.png` | sin congelar: captura al final de la (última) corrida, como en la 0.2. Con `--congelar` o `--congelar-cuadros`: capturas deterministas en una pasada aparte (ver abajo); con varios pasos sale una por paso, `x-<paso>.png`. |
+| `--congelar "<expr>"` | (v0.3) expresión que se evalúa en la pasada de capturas, tras `listo`, para que **la app** pause su reloj y fije la cámara (p. ej. `app.pausar(); app.camara([30, 25, 30], [0, 0, 0])`). Es el modo recomendado cuando la app lo permite. |
+| `--congelar-cuadros N` | (v0.3) modo genérico de respaldo, sin tocar la app: reloj virtual desde la carga y congelado tras N cuadros (detalles abajo). Se puede combinar con `--congelar`. |
 
 `comparar` acepta las rutas con o sin `.json`.
+
+### Capturas deterministas (v0.3)
+
+Las capturas de un gemelo no se pueden comparar si la simulación sigue corriendo: cambian la hora, los vehículos y las puertas.
+Con `--congelar` o `--congelar-cuadros` (y `--captura`), después de las mediciones se abre **otro navegador**, que no mide nada:
+
+1. carga la página y espera `--listo`;
+2. con `--congelar-cuadros N`, espera a que la app haya corrido N cuadros de reloj virtual;
+3. evalúa `--congelar`, si se dio;
+4. por cada paso: evalúa su `js` (la cámara de ese paso), espera `espera`, deja dibujar 2 cuadros y captura.
+
+`--congelar-cuadros N` instala, antes que cualquier script de la página:
+
+- `performance.now`, `Date.now` y `new Date()` en un **reloj virtual** que empieza en 0 (`Date` en 2026-01-15 18:00 UTC) y avanza exactamente 1/60 s por cada cuadro en que la app pidió `requestAnimationFrame`. Lo que tarde la carga no cuenta.
+- `Math.random` con semilla fija.
+- `requestAnimationFrame` controlado: tras N cuadros el tiempo se detiene y la app deja de recibir cuadros, salvo los 2 que se le dan antes de cada captura (con el tiempo quieto, para que se vea el cambio de cámara del paso).
+
+Así, dos versiones de la misma app quedan en el mismo instante de su simulación, aunque una cargue más lento.
+
+**Límites del modo genérico:**
+
+- `setTimeout`, `setInterval`, `fetch` y los eventos siguen en tiempo real. Si la app avanza su estado con un `setInterval` que usa `Math.random`, la secuencia con semilla se intercala distinto y algo puede moverse (en SILO 3D, dos trabajadores). Para medir el brillo, usa zonas que no los incluyan.
+- Las animaciones por tiempo que lance un paso (`flyTo` de 3 s) no avanzan con el tiempo detenido: en la pasada de capturas, el `js` del paso debe poner la cámara de golpe.
+- Lo que la app hace "por cuadro" y no "por tiempo" (`OrbitControls` con `autoRotate` o `enableDamping` sin `deltaTime`) sí avanza en los 2 cuadros previos a cada captura. Es igual en A y B, así que no afecta la comparación.
+- `Date()` llamado como función (sin `new`) lanza un error con el reloj virtual.
+- Las mediciones de fps nunca usan el reloj virtual: van en sus propias corridas.
+
+**Cuál usar:** `--congelar` si la app expone cómo pausarse y mover la cámara (es lo más fiel). `--congelar-cuadros 120` si no expone nada (un solo archivo con todo en módulos, como SILO 3D). N debe ser suficiente para que la escena termine de armarse; 120 son 2 s de simulación.
+
+### `comparar-capturas` (v0.3)
+
+```
+node medidor.mjs comparar-capturas a.png b.png [--zonas zonas.json] [--umbral 10] [--diff diff.png] [--md salida.md]
+```
+
+- **Luminancia media** (0–255) de cada imagen, Rec. 601 sobre los valores sRGB (la misma que el modo `L` de PIL), y su **Δ%** = (B − A) / A.
+- **% de píxeles que difieren**: píxeles en que el canal más distinto difiere más de `--umbral` (0–255, por defecto 10).
+- `--zonas`: `{"piso": [x, y, ancho, alto], "cielo": [...]}` en px, o en fracción de la imagen si los cuatro números son ≤ 1. Da las mismas métricas por zona.
+- `--diff`: PNG con A en gris tenue y en rojo los píxeles que difieren. Sirve para ver si la diferencia es sombreado (zonas enteras) o desalineación (bordes dobles).
+- Lee PNG RGB o RGBA de 8 bits sin entrelazar (los de Chrome/Playwright) con el `zlib` de Node. Cualquier otro formato, o dos tamaños distintos, falla con un mensaje claro.
 
 ### Flags de GPU por defecto
 
@@ -65,7 +111,7 @@ node medidor.mjs comparar a.json b.json [--md comparacion.md]
 **Límite:** se mide la cadencia de `requestAnimationFrame`, no el tiempo de GPU. Para tiempo de GPU por cuadro, combinar con
 [stats-gl](https://github.com/RenaudRohlinger/stats-gl); para ver qué hay dentro de un cuadro, [Spector.js](https://spector.babylonjs.com/).
 
-### JSON (`version: 2`; la 2 solo agrega campos a la 1)
+### JSON (`version: 3`; cada versión solo agrega campos a la anterior)
 
 ```
 { version, fecha, url, etiqueta,
@@ -75,14 +121,29 @@ node medidor.mjs comparar a.json b.json [--md comparacion.md]
           gl:{calls,tris,callsMax,trisMax},heapMB:{ini,fin},extra,
           huecos:{n,maxMs,lista:[[t,ms]]},longTasksT:[[t,ms]],
           shaders:{links,programas,rafagas:[{t,n}],causas:[{t,nuevos,total,luces:[],claves:[]}]}}],
-  cpu:[{ms,fn}] }
+  cpu:[{ms,fn}],
+  // v3, solo con --repetir N (N ≥ 2): carga y pasos son medianas (las listas y textos, de la corrida 1)
+  repeticiones, rango:{'carga.listoMs':[mín,máx], '<paso>.fps.p50':[mín,máx], …}, corridas:[{carga,pasos,cpu}],
+  // v3, solo con captura congelada
+  capturas:{archivos:[], errores:[]} }
 ```
+
+Las claves de `rango` son los mismos nombres de métrica que usa `comparar`. Con N par, la mediana es el promedio de las dos centrales.
 
 ### `comparar`
 
 Tabla `métrica | A | B | Δ% | veredicto` con los pasos emparejados por nombre. En fps más es mejor; en lo demás, menos.
-Marca `≈` si la diferencia es menor de 5 % (umbral ingenuo: correr A contra A para ver el ruido real).
 Avisa si difieren `gpu`, `viewport`, `dpr`, `vsync` o `software`.
+
+**Ruido (v0.3).** Si los reportes traen repeticiones, cada fila tiene un ruido:
+
+- ruido de un lado = (máx − mín) / |mediana| · 100 de esa métrica;
+- ruido de la fila = el del lado más disperso;
+- veredicto `≈` si |Δ| < máx(5 %, ruido), donde Δ es la diferencia de medianas. Si no, `mejor` o `peor`.
+
+O sea: una diferencia que cabe en lo que varió una misma versión entre sus propias corridas no se cuenta. Las celdas muestran `mediana [mín–máx]`.
+Con una sola corrida por lado se mantiene el umbral fijo del 5 % y el `.md` lo advierte ("una corrida: sin estimación de ruido").
+Si solo un lado trae repeticiones, cuenta solo su ruido. Con 3 corridas la regla es tosca: un rango de 3 valores subestima el ruido real. Si una diferencia importa, sube a `--repetir 5`.
 
 ## Ejemplo con pasos
 
@@ -127,7 +188,49 @@ node medidor.mjs http://localhost:8080/babylon.html --sin-vsync --dpr 1 --pasos 
 node medidor.mjs comparar reportes/three reportes/babylon --md reportes/three-vs-babylon.md
 ```
 
-Corre cada una dos veces y compara A contra A antes de creerle a una diferencia menor al 10 %.
+Usa `--repetir 3` (o más) en las dos: `comparar` marcará `≈` lo que quede dentro del ruido.
+
+## Receta: comparar dos versiones de un gemelo (migraciones)
+
+Caso típico: subir three de r160 a r187 y ver si algo se rompió, en rendimiento o en la imagen. Se dejan las dos versiones lado a lado
+(`index.r160.html` y `index.html`) y se sirven por HTTP desde la carpeta del gemelo.
+
+1. **Pasos con las cámaras que importan.** El `js` de cada paso pone la vista **de golpe** (sin vuelos animados), para que la misma lista sirva para medir y para capturar:
+   ```json
+   [
+     { "nombre": "rayosx", "dur": 8 },
+     { "nombre": "exterior", "dur": 8, "js": "document.getElementById('xray').click()" }
+   ]
+   ```
+2. **Medir las dos con repeticiones y captura congelada:**
+   ```
+   node medidor.mjs http://127.0.0.1:3122/index.r160.html --repetir 3 --sin-vsync --dpr 1 --pasos pasos.json \
+        --congelar-cuadros 120 --captura mig/r160.png --etiqueta r160 --salida mig/r160
+   node medidor.mjs http://127.0.0.1:3122/index.html      --repetir 3 --sin-vsync --dpr 1 --pasos pasos.json \
+        --congelar-cuadros 120 --captura mig/r187.png --etiqueta r187 --salida mig/r187
+   ```
+   Si la app expone cómo pausarse, usa `--congelar "<expr>"` en lugar de `--congelar-cuadros`, o junto con él.
+3. **Rendimiento:** `node medidor.mjs comparar mig/r160 mig/r187 --md mig/comparacion.md`. Solo cuenta lo que sale `peor` o `mejor` con ruido bajo. En la iGPU, los fps varían 15–40 % entre corridas de la misma versión.
+4. **Imagen:** por cada paso,
+   ```
+   node medidor.mjs comparar-capturas mig/r160-exterior.png mig/r187-exterior.png --zonas zonas.json --diff mig/diff-exterior.png
+   ```
+   con zonas que separen materiales (metal, piso, muros, cielo) y una zona de control en el HTML (debe dar Δ ≈ 0). Abre el `--diff`: si los bordes salen dobles, la cámara o los objetos no coinciden y el Δ no sirve.
+5. **Lectura:** un Δ total pequeño puede esconder zonas que se compensan. Revisa siempre las zonas.
+
+**Resultado en SILO 3D, r160 contra r187 ya calibrado (23-nov-2026, laptop Intel UHD, 1600×900, `--repetir 3 --sin-vsync --dpr 1 --congelar-cuadros 120`):**
+
+| | r160 | r187 | Δ | veredicto |
+|---|---|---|---|---|
+| rayosx fps p50 | 42.2 [34.2–42.4] | 34.5 [32.1–45.9] | −18.2 % (ruido 40 %) | ≈ |
+| exterior fps p50 | 54.9 [51.8–57.5] | 51.5 [44.8–53.2] | −6.2 % (ruido 16 %) | ≈ |
+| transferido | 434 KB | 551 KB | +26.8 % (ruido 0) | peor (el split `three.core.js` + `three.module.js`) |
+| draw calls rayosx | 583 | 583 | 0 | ≈ |
+| luminancia total, exterior / rayos X | 58.76 / 59.16 | 59.04 / 59.06 | +0.48 % / −0.16 % | calibrado |
+| zonas exterior: techo / cuerpo / tanque | 152.9 / 130.2 / 78.7 | 138.9 / 140.1 / 95.8 | −9.2 % / +7.5 % / +21.7 % | el metal cambia de carácter |
+
+Con la versión **sin ajuste** (capturas del piloto, `r187-sinajuste`), el Δ total es **+12.1 %** (exterior) y **+10.2 %** (rayos X), y el tanque llega a +43.7 %.
+En v0.2, con una corrida por lado, `comparar` había marcado `fps.p50 −6.5 %` como **peor**.
 
 ## Resultados de referencia (20-nov-2026)
 
@@ -171,9 +274,9 @@ Se aceptan por ahora; se resolverán si un caso real los necesita.
 - **Coste:** la sonda recorre las escenas cada 0.5 s. No se ha medido su coste en escenas grandes. *A futuro:* medirlo con y sin sonda en el gemelo más pesado.
 - **Pruebas:** `prueba/escena.html?recompilar=1` recompila con un temporizador, no al mover el ratón, y no prueba el enganche de three. *A futuro:* una escena three que oculte un foco al arrastrar.
 
-## Fuera de alcance v0.1
+## Fuera de alcance
 
-`--rep N` con mediana, exit code por regresión, wrapper de ssh y trazas de GPU.
+Exit code por regresión, wrapper de ssh y trazas de GPU. (`--repetir N` con mediana llegó en la 0.3.)
 
 Referencia útil: el e2e de three.js (`test/e2e/puppeteer.js`, `deterministic-injection.js`, MIT).
 

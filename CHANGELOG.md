@@ -2,6 +2,27 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 
+## [0.3.0] - 2026-11-23
+
+Motivo: la migración de three r160 → r187 de SILO 3D y CuartoFrio. `comparar` marcaba como "peor" diferencias que cabían en el ruido de la iGPU (hasta 25 % entre corridas iguales), y las capturas de las dos versiones no se podían comparar porque la simulación seguía corriendo.
+
+### Agregado
+- `--repetir N`: N corridas completas, cada una en un navegador nuevo (perfil limpio). `carga` y `pasos` pasan a ser medianas, con `rango` (`[mín, máx]` por métrica) y `corridas`. El `.md` muestra `mediana [mín–máx]`. Las alertas se dan por corrida.
+- `comparar` con ruido: si hay repeticiones, `≈` cuando |Δ de medianas| < máx(5 %, ruido), donde ruido = (máx − mín) / mediana del lado más disperso. Nueva columna "ruido %". Con una corrida se mantiene el 5 % y el `.md` advierte "una corrida: sin estimación de ruido".
+- Capturas deterministas en una pasada aparte, después de medir:
+  - `--congelar "<expr>"`: la app pausa su reloj y fija su cámara;
+  - `--congelar-cuadros N`: respaldo genérico. Pone `performance.now`, `Date` y `Math.random` (con semilla) en un reloj virtual de 1/60 s por cuadro y detiene el tiempo y `requestAnimationFrame` tras N cuadros.
+  - Con varios pasos sale una captura por paso (`<captura>-<paso>.png`), cada una con la cámara que pone el `js` del paso.
+- `comparar-capturas a.png b.png [--zonas] [--umbral] [--diff] [--md]`: luminancia media y Δ%, % de píxeles que difieren y PNG de diferencias, en total y por zona. Decodifica y codifica PNG con el `zlib` de Node (RGB/RGBA de 8 bits sin entrelazar; con otro formato falla con un mensaje claro).
+
+### Cambiado
+- JSON `version: 3`. Solo agrega campos opcionales (`repeticiones`, `rango`, `corridas`, `capturas`): sin `--repetir` ni captura congelada, el contenido es el de la 0.2.
+- La sonda mide con su propio `requestAnimationFrame` y `performance.now`, aunque la página los tenga congelados.
+
+### Pruebas
+- Unitaria: mediana, agregación de corridas, `≈` por ruido contra "peor" sin él, PNG de ida y vuelta, PNG de 16 bits rechazado, zonas en fracción y tamaños distintos.
+- Integración: `--repetir 2` (corridas, mediana dentro del rango); dos pasadas con `--congelar-cuadros 30` y dos pasos dan capturas idénticas (sin congelar difieren ~0.5 % de los píxeles); `comparar-capturas` por CLI de una imagen contra sí misma (Δ 0), contra una versión aclarada (Δ > 0) y contra algo que no es PNG.
+
 ## [0.2.1] - 2026-11-20
 
 ### Corregido
