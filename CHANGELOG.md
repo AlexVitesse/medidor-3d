@@ -7,6 +7,7 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 Motivo: la migración de three r160 → r187 de SILO 3D y CuartoFrio. `comparar` marcaba como "peor" diferencias que cabían en el ruido de la iGPU (hasta 25 % entre corridas iguales), y las capturas de las dos versiones no se podían comparar porque la simulación seguía corriendo.
 
 ### Agregado
+- Versión del motor en `entorno.motor` (`{three, babylon}`, leída de `window.__THREE__` y `BABYLON.Engine.Version`). El `.md` y `comparar` la muestran ("three r160" vs "three r187"); con reportes viejos sale "?".
 - `--repetir N`: N corridas completas, cada una en un navegador nuevo (perfil limpio). `carga` y `pasos` pasan a ser medianas, con `rango` (`[mín, máx]` por métrica) y `corridas`. El `.md` muestra `mediana [mín–máx]`. Las alertas se dan por corrida.
 - `comparar` con ruido: si hay repeticiones, `≈` cuando |Δ de medianas| < máx(5 %, ruido), donde ruido = (máx − mín) / mediana del lado más disperso. Nueva columna "ruido %". Con una corrida se mantiene el 5 % y el `.md` advierte "una corrida: sin estimación de ruido".
 - Capturas deterministas en una pasada aparte, después de medir:

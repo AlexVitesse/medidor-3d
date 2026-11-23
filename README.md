@@ -113,6 +113,8 @@ node medidor.mjs comparar-capturas a.png b.png [--zonas zonas.json] [--umbral 10
 
 ### JSON (`version: 3`; cada versión solo agrega campos a la anterior)
 
+`entorno.motor` trae la versión del motor detectada en la página: `three` (de `window.__THREE__`, que three escribe al importarse, p. ej. `"187"`) y `babylon` (`BABYLON.Engine.Version`, solo si Babylon está en `window`). Si la app carga dos copias de three, `__THREE__` queda con la primera y three avisa en consola.
+
 ```
 { version, fecha, url, etiqueta,
   entorno:{plataforma,navegador,gpu,software,viewport:[w,h],dpr,vsync},

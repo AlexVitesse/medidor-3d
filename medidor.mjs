@@ -186,10 +186,12 @@ async function corrida(ultima) {
     const e = gl.getExtension('WEBGL_debug_renderer_info');
     return e ? gl.getParameter(e.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
   }).catch(() => '?');
+  // three escribe su REVISION en window.__THREE__ al importarse; Babylon la expone en BABYLON.Engine.Version
+  const motor = await page.evaluate(() => ({ three: window.__THREE__ ?? null, babylon: window.BABYLON?.Engine?.Version ?? null })).catch(() => ({ three: null, babylon: null }));
   if (o.captura && !congelar && ultima) await page.screenshot({ path: o.captura }); // como en 0.2: al final de la (última) corrida
   const navegador = `${browser.browserType().name()} ${browser.version()}`;
   await browser.close();
-  return { entorno: { plataforma: `${process.platform}-${process.arch}`, navegador, gpu, software: esSoftware(gpu), viewport: [ancho, alto], dpr, vsync: !o['sin-vsync'] }, carga, pasos: resultados, cpu };
+  return { entorno: { plataforma: `${process.platform}-${process.arch}`, navegador, gpu, motor, software: esSoftware(gpu), viewport: [ancho, alto], dpr, vsync: !o['sin-vsync'] }, carga, pasos: resultados, cpu };
 }
 
 /**

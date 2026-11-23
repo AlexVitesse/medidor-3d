@@ -93,12 +93,14 @@ export function alertas(r) {
 
 export const esSoftware = (gpu) => /swiftshader|llvmpipe|softpipe|software|basic render/i.test(gpu || '');
 
+/** Motor 3D detectado, p. ej. "three r187" (los reportes v1–v3 sin `motor` dan "?"). */
+export const motorTxt = (e) => [e?.motor?.three && `three r${e.motor.three}`, e?.motor?.babylon && `Babylon ${e.motor.babylon}`].filter(Boolean).join(' + ') || (e?.motor ? 'no detectado' : '?');
 const kb = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(2)} MB` : `${(b / 1024).toFixed(1)} KB`);
 
 /** Reporte de una corrida en markdown. */
 export function aMarkdown(r) {
   const e = r.entorno, c = r.carga, L = [`# medidor-3d · ${r.etiqueta || r.url}`, '', `- URL: ${r.url}`, `- Fecha: ${r.fecha}`,
-    `- Entorno: ${e.plataforma} · ${e.navegador} · viewport ${e.viewport.join('×')} @ dpr ${e.dpr} · vsync ${e.vsync ? 'sí' : 'no'}`, `- GPU: ${e.gpu}`];
+    `- Entorno: ${e.plataforma} · ${e.navegador} · viewport ${e.viewport.join('×')} @ dpr ${e.dpr} · vsync ${e.vsync ? 'sí' : 'no'}`, `- GPU: ${e.gpu}`, `- Motor: ${motorTxt(e)}`];
   if (r.repeticiones) L.push(`- Repeticiones: ${r.repeticiones}. Cada valor es la mediana, con [mín–máx] si varió. Las listas (más pesados, tirones, recompilaciones) son de la corrida 1.`);
   if (e.software) L.push('', '> **AVISO: GPU POR SOFTWARE** (SwiftShader/llvmpipe). Los fps no representan una GPU real.');
   // valor con su [mín–máx], si hay repeticiones y varió
@@ -167,7 +169,7 @@ export function comparar(A, B) {
 
 export function comparacionMd(A, B, { avisos, filas }) {
   const n = (R) => (R.repeticiones ? `mediana de ${R.repeticiones} corridas` : 'una corrida: sin estimación de ruido');
-  const L = [`# Comparación`, '', `- A: ${A.etiqueta || A.url} (${A.fecha}) · ${A.entorno.gpu} · ${n(A)}`, `- B: ${B.etiqueta || B.url} (${B.fecha}) · ${B.entorno.gpu} · ${n(B)}`, ''];
+  const L = [`# Comparación`, '', `- A: ${A.etiqueta || A.url} (${A.fecha}) · ${motorTxt(A.entorno)} · ${A.entorno.gpu} · ${n(A)}`, `- B: ${B.etiqueta || B.url} (${B.fecha}) · ${motorTxt(B.entorno)} · ${B.entorno.gpu} · ${n(B)}`, ''];
   if (avisos.length) L.push('**Avisos** (la comparación puede no ser justa):', '', ...avisos.map((a) => `- ${a}`), '');
   const conRuido = !!(A.rango || B.rango);
   L.push(conRuido
