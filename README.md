@@ -41,6 +41,7 @@ node medidor.mjs comparar-capturas a.png b.png [--zonas zonas.json] [--umbral 10
 | `--chrome <ruta>` | ejecutable de Chrome/Chromium. También la variable `CHROME`. Sin ninguno: `channel: 'chrome'` (el Chrome instalado). |
 | `--angle <backend>` | sustituye el backend ANGLE por defecto. |
 | `--salida x` | escribe `x.json` y `x.md`. Por defecto `reportes/<host>-<AAAAMMDD-HHMM>`. Con `-` el JSON va a stdout y los mensajes a stderr. |
+| `--ab N` | (v0.4) A/B intercalado. Los **dos últimos** pasos de `--pasos` son la variante A y la B; los anteriores corren una vez (preparación, cámara). Se miden A#1 B#1 A#2 … B#N A#N+1 y cada B se compara con la **media de sus dos A vecinas**: si la escena se pone más pesada con el tiempo, pesa igual en los dos lados. Ver "A/B intercalado" abajo. |
 | `--repetir N` | (v0.3) corre la medición completa N veces, cada una en un **navegador nuevo** (perfil temporal limpio: sin caché HTTP ni de shaders, sin calentamiento heredado). El JSON trae las N corridas, y `carga`/`pasos` pasan a ser la **mediana** de cada métrica, con su `[mín, máx]` en `rango`. El `.md` muestra `mediana [mín–máx]`. Sin `--repetir`, el JSON es igual al de la 0.2 (solo cambia `version`). |
 | `--captura x.png` | sin congelar: captura al final de la (última) corrida, como en la 0.2. Con `--congelar` o `--congelar-cuadros`: capturas deterministas en una pasada aparte (ver abajo); con varios pasos sale una por paso, `x-<paso>.png`. |
 | `--congelar "<expr>"` | (v0.3) expresión que se evalúa en la pasada de capturas, tras `listo`, para que **la app** pause su reloj y fije la cámara (p. ej. `app.pausar(); app.camara([30, 25, 30], [0, 0, 0])`). Es el modo recomendado cuando la app lo permite. |
@@ -75,6 +76,29 @@ Así, dos versiones de la misma app quedan en el mismo instante de su simulació
 - Las mediciones de fps nunca usan el reloj virtual: van en sus propias corridas.
 
 **Cuál usar:** `--congelar` si la app expone cómo pausarse y mover la cámara (es lo más fiel). `--congelar-cuadros 120` si no expone nada (un solo archivo con todo en módulos, como SILO 3D). N debe ser suficiente para que la escena termine de armarse; 120 son 2 s de simulación.
+
+### Escena que cambia sola (v0.4)
+
+Los pasos se miden uno tras otro. Si la escena cambia mientras tanto (gente o vehículos que entran en cámara, módulos que despiertan, una obra que se sigue armando), los fps de dos pasos seguidos no se pueden comparar, aunque la cámara sea la misma. Pasó en la migración del hotel: los fps bajaban paso a paso igual con radio de sombra 1, 2 o 4, también en r160, donde el radio ni se usa. Los draw calls habían subido de 196 a 354.
+
+- **Deriva por paso:** `gl.deriva` es el % de cambio de la mediana de draw calls del último tercio del paso respecto al primero. Se usan medianas por tercio, no mín/máx, porque los cuadros con pasada de sombras dan picos periódicos que no son un cambio de escena. Si pasa de ±20 % y el paso no es `--interactuar`, sale la alerta *"la escena cambió durante el paso"*.
+- **A/B intercalado (`--ab N`):** para probar un ajuste (radio de sombra, calidad, un material), pon un paso de preparación, luego A y B, que solo cambian el ajuste:
+
+  ```json
+  [
+    { "nombre": "camara", "espera": 60000, "js": "…pone la cámara…" },
+    { "nombre": "r2", "espera": 1500, "dur": 6, "js": "app.sun.shadow.radius = 2" },
+    { "nombre": "r1", "espera": 1500, "dur": 6, "js": "app.sun.shadow.radius = 1" }
+  ]
+  ```
+
+  ```
+  node medidor.mjs <url> --pasos ab.json --ab 3 --repetir 2 --sin-vsync --dpr 1
+  ```
+
+  El reporte trae `ab: {a, b, pares: [{corrida, i, fpsA, fpsB, dFps, callsA, callsB, dCalls, dEntreA}], dFps, ruidoA, veredicto}` y una sección "A/B" en el `.md`.
+  - **Veredicto:** "B mejor" o "B peor" solo si **todos** los pares van en el mismo sentido y la mediana de Δ supera el 5 % y el ruido entre las A vecinas. Si no, sale "sin diferencia clara".
+  - **Alertas:** si los draw calls de un B difieren más de 20 % de sus A vecinas, la escena cambió y esa diferencia no es de la variante. Si las A vecinas difieren más de 15 % entre sí, la escena no está estable: calienta más o congela la simulación.
 
 ### `comparar-capturas` (v0.3)
 
@@ -111,7 +135,7 @@ node medidor.mjs comparar-capturas a.png b.png [--zonas zonas.json] [--umbral 10
 **Límite:** se mide la cadencia de `requestAnimationFrame`, no el tiempo de GPU. Para tiempo de GPU por cuadro, combinar con
 [stats-gl](https://github.com/RenaudRohlinger/stats-gl); para ver qué hay dentro de un cuadro, [Spector.js](https://spector.babylonjs.com/).
 
-### JSON (`version: 3`; cada versión solo agrega campos a la anterior)
+### JSON (`version: 4`; cada versión solo agrega campos a la anterior; v4: `gl.deriva`, `interactuar` por paso y `ab`)
 
 `entorno.motor` trae la versión del motor detectada en la página: `three` (de `window.__THREE__`, que three escribe al importarse, p. ej. `"187"`) y `babylon` (`BABYLON.Engine.Version`, solo si Babylon está en `window`). Si la app carga dos copias de three, `__THREE__` queda con la primera y three avisa en consola.
 

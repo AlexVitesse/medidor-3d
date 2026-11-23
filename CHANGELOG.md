@@ -2,6 +2,18 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 
+## [0.4.0] - 2026-11-23
+
+Motivo: en la migración del hotel, los pasos seguidos daban fps distintos con cualquier ajuste (también en r160) porque la escena cambiaba sola. Con eso casi se concluye que el radio de sombra bajaba los fps.
+
+### Agregado
+- `gl.deriva` por paso: cambio de la mediana de draw calls del primer al último tercio. Alerta si pasa de ±20 % en un paso sin ratón.
+- `--ab N`: A/B intercalado (A#1 B#1 … A#N+1). Cada B se compara con sus dos A vecinas, con veredicto, ruido entre A y alertas si la escena cambió en medio. Sección "A/B" en el `.md`.
+- Pruebas: unitarias de `deriva` y `resumirAB`, e integración de `--ab 2`.
+
+### Cambiado
+- JSON `version: 4` (solo agrega campos).
+
 ## [0.3.0] - 2026-11-23
 
 Motivo: la migración de three r160 → r187 de SILO 3D y CuartoFrio. `comparar` marcaba como "peor" diferencias que cabían en el ruido de la iGPU (hasta 25 % entre corridas iguales), y las capturas de las dos versiones no se podían comparar porque la simulación seguía corriendo.

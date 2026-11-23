@@ -8,7 +8,7 @@ import { parseArgs } from 'node:util';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resumirPaso, resumirLongTasks, esSoftware, aMarkdown, comparar, comparacionMd, alertas, agregarCorridas, compararCapturas, capturasMd } from './lib.mjs';
+import { resumirPaso, resumirLongTasks, esSoftware, aMarkdown, comparar, comparacionMd, alertas, agregarCorridas, compararCapturas, capturasMd, resumirAB } from './lib.mjs';
 
 const AQUI = dirname(fileURLToPath(import.meta.url));
 const log = (...a) => console.error('[medidor]', ...a);
@@ -25,7 +25,7 @@ const { values: o, positionals } = parseArgs({
     chrome: { type: 'string' }, angle: { type: 'string' }, extra: { type: 'string' }, cpu: { type: 'string' },
     captura: { type: 'string' }, congelar: { type: 'string' }, 'congelar-cuadros': { type: 'string' },
     zonas: { type: 'string' }, umbral: { type: 'string', default: '10' }, diff: { type: 'string' },
-    salida: { type: 'string' }, md: { type: 'string' }, ayuda: { type: 'boolean', short: 'h' },
+    salida: { type: 'string' }, md: { type: 'string' }, ab: { type: 'string' }, ayuda: { type: 'boolean', short: 'h' },
   },
 });
 
@@ -63,8 +63,19 @@ const url = positionals[0];
 const dur = n('dur'), calentar = n('calentar'), ancho = n('ancho'), alto = n('alto'), dpr = n('dpr'), nCpu = o.cpu ? n('cpu') : 0;
 const reps = Math.max(1, Math.round(n('repetir'))), nCongelar = o['congelar-cuadros'] != null ? Math.round(n('congelar-cuadros')) : null;
 const congelar = o.congelar != null || nCongelar != null; // con cualquiera de los dos, las capturas salen de su propia pasada
-const pasos = o.pasos ? JSON.parse(readFileSync(o.pasos, 'utf8')) : [{ nombre: 'base' }];
+let pasos = o.pasos ? JSON.parse(readFileSync(o.pasos, 'utf8')) : [{ nombre: 'base' }];
 const nombrePaso = (p, i) => p.nombre || `paso${i + 1}`;
+// --ab N (v0.4): los dos últimos pasos son la variante A y la B; los anteriores corren una vez (preparación). Se intercalan
+// A#1 B#1 A#2 … B#N A#N+1 y cada B se compara con sus dos A vecinas: una escena que cambia sola no se confunde con la variante.
+let AB = null;
+if (o.ab != null) {
+  const veces = Math.max(1, Math.round(n('ab')));
+  if (pasos.length < 2) { log('--ab necesita --pasos con al menos 2 pasos: los dos últimos son A y B'); process.exit(1); }
+  const [A, B] = pasos.slice(-2), a = nombrePaso(A, pasos.length - 2), b = nombrePaso(B, pasos.length - 1);
+  if (a === b) { log('--ab: A y B necesitan nombres distintos'); process.exit(1); }
+  AB = { a, b };
+  pasos = [...pasos.slice(0, -2), ...Array.from({ length: veces }, (_, i) => [{ ...A, nombre: `${a}#${i + 1}` }, { ...B, nombre: `${b}#${i + 1}` }]).flat(), { ...A, nombre: `${a}#${veces + 1}` }];
+}
 const LIMITE = 120000;
 
 let chromium;
@@ -169,7 +180,7 @@ async function corrida(ultima) {
     log(`midiendo "${nombre}" ${d} s${inter ? ' con ratón' : ''}`);
     if (inter) await interactuar(page, d * 1000); else await page.waitForTimeout(d * 1000);
     const crudo = await page.evaluate(() => window.__medidor.leer());
-    resultados.push(resumirPaso({ nombre, ...crudo, heapMB: { ini, fin: await heap() }, extra: await extra() }));
+    resultados.push(resumirPaso({ nombre, ...crudo, interactuar: inter, heapMB: { ini, fin: await heap() }, extra: await extra() }));
   }
 
   let cpu = [];
@@ -229,12 +240,13 @@ async function capturar() {
 const corridas = [];
 for (let k = 1; k <= reps; k++) { if (reps > 1) log(`corrida ${k}/${reps}`); corridas.push(await corrida(k === reps)); }
 const [c1] = corridas;
-const reporte = { version: 3, fecha: new Date().toISOString(), url, etiqueta: o.etiqueta || null, entorno: c1.entorno };
+const reporte = { version: 4, fecha: new Date().toISOString(), url, etiqueta: o.etiqueta || null, entorno: c1.entorno };
 if (reps === 1) Object.assign(reporte, { carga: c1.carga, pasos: c1.pasos, cpu: c1.cpu });
 else {
   const ag = agregarCorridas(corridas);
   Object.assign(reporte, { repeticiones: reps, carga: ag.carga, pasos: ag.pasos, cpu: c1.cpu, rango: ag.rango, corridas: corridas.map(({ entorno, ...c }) => c) });
 }
+if (AB) reporte.ab = resumirAB(corridas.map((c) => c.pasos), AB.a, AB.b);
 if (o.captura && congelar) reporte.capturas = await capturar();
 if (reporte.entorno.software) log(rojo(`AVISO: GPU por software (${reporte.entorno.gpu}); los fps no representan una GPU real`));
 
@@ -247,6 +259,7 @@ else {
   writeFileSync(`${base}.json`, JSON.stringify(reporte, null, 2));
   writeFileSync(`${base}.md`, aMarkdown(reporte));
   log(`→ ${base}.json / .md`);
+  if (reporte.ab) log(`A/B ${reporte.ab.a} contra ${reporte.ab.b}: ${reporte.ab.veredicto} (Δ fps ${reporte.ab.dFps} %, ruido entre A ${reporte.ab.ruidoA} %, ${reporte.ab.pares.length} pares)`);
   for (const p of reporte.pasos) log(`${p.nombre}: fps p50 ${p.fps.p50} · p1 ${p.fps.p1} · ms p99 ${p.ms.p99} · calls ${p.gl?.calls ?? '–'} · tris ${p.gl?.tris ?? '–'}${reps > 1 ? ` (mediana de ${reps})` : ''}`);
 }
 for (const a of alertas(reporte)) log(rojo(`ALERTA: ${a}`)); // también con --salida - (log va a stderr)

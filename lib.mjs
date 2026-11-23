@@ -36,6 +36,48 @@ export function agregarCorridas(corridas) {
   return { carga, pasos, rango };
 }
 
+/**
+ * v0.4: cuánto cambió la escena DURANTE un paso: % de la mediana de draw calls del último tercio respecto al primero.
+ * Medianas por tercio (no mín/máx): los cuadros con pasada de sombras o de un efecto dan picos periódicos que no son cambio de escena.
+ */
+export function deriva(calls) {
+  if (!calls || calls.length < 30) return null;
+  const k = Math.floor(calls.length / 3), a = mediana(calls.slice(0, k)), b = mediana(calls.slice(-k));
+  return a ? r1((100 * (b - a)) / a) : null;
+}
+export const DERIVA_MAX = 20; // % — más que esto y los fps del paso dependen de la escena, no de la variante
+
+/**
+ * v0.4, modo --ab: pasos A#1 B#1 A#2 … B#n A#n+1. Cada B se compara con la media de sus dos A vecinas (antes y después), así
+ * una escena que cambia sola con el tiempo pesa igual en los dos lados. `corridas` = lista de listas de pasos (una por corrida).
+ */
+export function resumirAB(corridas, a, b) {
+  const pares = [];
+  for (const [ci, pasos] of corridas.entries()) {
+    const por = Object.fromEntries(pasos.map((p) => [p.nombre, p]));
+    for (let i = 1; por[`${b}#${i}`]; i++) {
+      const A1 = por[`${a}#${i}`], A2 = por[`${a}#${i + 1}`], B = por[`${b}#${i}`];
+      if (!A1 || !A2) continue;
+      const m = (f) => (f(A1) + f(A2)) / 2, fpsA = m((p) => p.fps.p50), callsA = B.gl && A1.gl && A2.gl ? m((p) => p.gl.calls) : null;
+      pares.push({ corrida: ci + 1, i, fpsA: r1(fpsA), fpsB: B.fps.p50, dFps: r1((100 * (B.fps.p50 - fpsA)) / fpsA),
+        callsA: r1(callsA), callsB: B.gl?.calls ?? null, dCalls: callsA ? r1((100 * (B.gl.calls - callsA)) / callsA) : null,
+        // las dos A vecinas entre sí: si difieren mucho, la escena cambió en medio y el par vale poco
+        dEntreA: r1((100 * Math.abs(A2.fps.p50 - A1.fps.p50)) / fpsA) });
+    }
+  }
+  const ds = pares.map((x) => x.dFps), d = mediana(ds), ruidoA = mediana(pares.map((x) => x.dEntreA));
+  const signo = ds.length && ds.every((x) => x > 0) ? 1 : ds.length && ds.every((x) => x < 0) ? -1 : 0;
+  return { a, b, pares, dFps: r1(d), ruidoA: r1(ruidoA),
+    veredicto: !pares.length ? 'sin pares' : signo && Math.abs(d) > Math.max(5, ruidoA) ? (signo > 0 ? `${b} mejor` : `${b} peor`) : 'sin diferencia clara' };
+}
+
+export function alertasAB(ab) {
+  const A = [], malos = ab.pares.filter((x) => x.dCalls != null && Math.abs(x.dCalls) > DERIVA_MAX);
+  if (malos.length) A.push(`[A/B] en ${malos.length} de ${ab.pares.length} pares los draw calls de ${ab.b} difieren más de ${DERIVA_MAX} % de sus A vecinas (p. ej. ${malos[0].callsA} → ${malos[0].callsB}): la escena cambió y esa diferencia de fps no es de la variante`);
+  if (ab.ruidoA > 15) A.push(`[A/B] las A vecinas difieren ${ab.ruidoA} % entre sí: la escena no está estable; calienta más (espera) o congela la simulación`);
+  return A;
+}
+
 /** Resumen de tareas largas: {n, totalMs, maxMs}. */
 export const resumirLongTasks = (dur) => ({ n: dur.length, totalMs: r1(dur.reduce((s, d) => s + d, 0)), maxMs: r1(dur.length ? Math.max(...dur) : 0) });
 
@@ -52,7 +94,9 @@ export function resumirPaso(c) {
     fps: { media: fps(media), p50: fps(p50), p5: fps(p95), p1: fps(p99) },
     ms: { p50: r1(p50), p95: r1(p95), p99: r1(p99), max: r1(ms.length ? Math.max(...ms) : null) },
     longTasks: resumirLongTasks(c.longTasks || []),
-    gl: c.calls ? { calls: mediana(c.calls), tris: mediana(c.tris), callsMax: c.calls.length ? Math.max(...c.calls) : null, trisMax: c.tris.length ? Math.max(...c.tris) : null } : null,
+    gl: c.calls ? { calls: mediana(c.calls), tris: mediana(c.tris), callsMax: c.calls.length ? Math.max(...c.calls) : null, trisMax: c.tris.length ? Math.max(...c.tris) : null,
+      deriva: deriva(c.calls) } : null,
+    interactuar: !!c.interactuar,
     heapMB: c.heapMB || null, extra: c.extra ?? null,
     // v2: cuándo pasó cada cosa (s desde el inicio del paso), para ligar un tirón con su causa
     huecos: resumirHuecos(c.huecos || []),
@@ -77,8 +121,9 @@ export function resumirShaders(c) {
 
 /** Avisos legibles: recompilaciones después de la carga y cuadros congelados (> 1 s). */
 export function alertas(r) {
-  if (r.corridas) return r.corridas.flatMap((c, i) => alertas(c).map((a) => `corrida ${i + 1}: ${a}`));
-  const A = [];
+  const ab = r.ab ? alertasAB(r.ab) : [];
+  if (r.corridas) return [...ab, ...r.corridas.flatMap((c, i) => alertas(c).map((a) => `corrida ${i + 1}: ${a}`))];
+  const A = ab;
   for (const p of r.pasos || []) {
     const s = p.shaders;
     if (s?.links) {
@@ -86,6 +131,7 @@ export function alertas(r) {
       A.push(`[${p.nombre}] ${s.links} shaders compilados después de la carga, en ${s.rafagas.length} ráfaga(s) (t = ${s.rafagas.slice(0, 5).map((x) => x.t + ' s').join(', ')})` +
         (causa.length ? ` · cambió: ${causa.join('; ')}` : (s.causas || []).length ? ` · pista: ${s.causas[0].claves[0]}` : ''));
     }
+    if (!p.interactuar && Math.abs(p.gl?.deriva ?? 0) > DERIVA_MAX) A.push(`[${p.nombre}] la escena cambió durante el paso: draw calls ${p.gl.deriva > 0 ? '+' : ''}${p.gl.deriva} % del primer al último tercio; sus fps no se pueden comparar con otro paso (usa --ab o calienta más)`);
     if (p.huecos?.maxMs > 1000) A.push(`[${p.nombre}] 3D congelado ${(p.huecos.maxMs / 1000).toFixed(1)} s (t = ${p.huecos.lista[0][0]} s); ${p.huecos.n} cuadro(s) de más de 250 ms`);
   }
   return A;
@@ -111,6 +157,12 @@ export function aMarkdown(r) {
   if (c.errores?.length) L.push('', 'Errores:', '', ...c.errores.map((x) => `- ${x}`));
   const al = alertas(r);
   if (al.length) L.push('', '## Alertas', '', ...al.map((a) => `- ⚠ ${a}`));
+  if (r.ab) {
+    const x = r.ab;
+    L.push('', `## A/B: ${x.a} contra ${x.b}`, '', `Veredicto: **${x.veredicto}** · Δ fps p50 de ${x.b} (mediana de los pares) ${x.dFps} % · ruido entre A vecinas ${x.ruidoA} %`, '',
+      '| corrida | par | fps A (media de vecinas) | fps B | Δ fps % | calls A | calls B | Δ calls % |', '|---|---|---|---|---|---|---|---|',
+      ...x.pares.map((q) => `| ${q.corrida} | ${q.i} | ${q.fpsA} | ${q.fpsB} | ${q.dFps} | ${q.callsA ?? '–'} | ${q.callsB ?? '–'} | ${q.dCalls ?? '–'} |`));
+  }
   L.push('', '## Pasos', '', '| paso | s | cuadros | fps media | p50 | p5 | p1 | ms p50 | p95 | p99 | máx | long tasks | calls (máx) | tris (máx) | heap MB ini→fin |',
     '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|');
   for (const p of r.pasos) {

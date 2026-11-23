@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { percentil, resumirPaso, comparar, comparacionMd, aMarkdown, esSoftware, resumirHuecos, resumirShaders, alertas, medianaReal, agregarCorridas, leerPng, escribirPng, compararCapturas } from './lib.mjs';
+import { percentil, resumirPaso, comparar, comparacionMd, aMarkdown, esSoftware, resumirHuecos, resumirShaders, alertas, medianaReal, agregarCorridas, leerPng, escribirPng, compararCapturas, deriva, resumirAB, alertasAB } from './lib.mjs';
 
 const AQUI = dirname(fileURLToPath(import.meta.url));
 
@@ -18,7 +18,7 @@ assert.equal(percentil(cien, 50), 50);
 assert.equal(percentil([7], 1), 7);
 const p = resumirPaso({ nombre: 'x', durS: 1, ms: Array(60).fill(16.67), calls: [3, 3, 3], tris: [3, 3, 3], longTasks: [] });
 assert.ok(Math.abs(p.fps.p50 - 60) < 0.5, `p50 ${p.fps.p50}`);
-assert.deepEqual(p.gl, { calls: 3, tris: 3, callsMax: 3, trisMax: 3 });
+assert.deepEqual(p.gl, { calls: 3, tris: 3, callsMax: 3, trisMax: 3, deriva: null });
 assert.equal(resumirPaso({ nombre: 'y', ms: [0, 0, 0.1] }).fps.p50, 10000, 'intervalo 0 (bajo la resolución de rAF): tope, no null');
 const ent = { gpu: 'G', viewport: [1, 1], dpr: 1, vsync: true, software: false };
 const rep = (fps, ms) => ({ entorno: ent, carga: {}, pasos: [{ nombre: 'base', fps: { p50: fps }, ms: { p50: ms } }] });
@@ -44,6 +44,19 @@ assert.match(al[1], /congelado 11\.0 s/);
 assert.deepEqual(alertas({ pasos: [{ nombre: 'x', shaders: resumirShaders({ links: [] }), huecos: resumirHuecos([]) }] }), []);
 // v3: --repetir (mediana y rango) y comparar con ruido
 assert.equal(medianaReal([3, 1, 2]), 2);
+// v0.4: deriva de escena dentro del paso y modo --ab
+assert.equal(deriva([...Array(30).fill(100), ...Array(30).fill(100), ...Array(30).fill(150)]), 50);
+assert.equal(deriva(Array.from({ length: 90 }, (_, i) => (i % 5 ? 100 : 300))), 0, 'picos periódicos (sombras) no son deriva');
+assert.match(alertas({ pasos: [{ nombre: 'quieto', gl: { deriva: 45 }, huecos: resumirHuecos([]) }] })[0], /escena cambió durante el paso: draw calls \+45 %/);
+assert.deepEqual(alertas({ pasos: [{ nombre: 'raton', interactuar: true, gl: { deriva: 45 }, huecos: resumirHuecos([]) }] }), [], 'con ratón la escena cambia a propósito');
+const pab = (nombre, fps, calls) => ({ nombre, fps: { p50: fps }, gl: { calls } });
+// escena que se vuelve más pesada con el tiempo (A: 40 → 30 fps) y B igual a sus vecinas: sin diferencia
+const ab1 = resumirAB([[pab('a#1', 40, 100), pab('b#1', 35, 110), pab('a#2', 30, 120)]], 'a', 'b');
+assert.equal(ab1.pares[0].dFps, 0); assert.equal(ab1.veredicto, 'sin diferencia clara');
+const ab2 = resumirAB([[pab('a#1', 40, 100), pab('b#1', 30, 100), pab('a#2', 40, 100), pab('b#2', 31, 100), pab('a#3', 40, 100)]], 'a', 'b');
+assert.equal(ab2.veredicto, 'b peor'); assert.equal(ab2.pares.length, 2);
+const ab3 = resumirAB([[pab('a#1', 40, 100), pab('b#1', 30, 200), pab('a#2', 40, 100)]], 'a', 'b');
+assert.match(alertasAB(ab3)[0], /draw calls de b difieren/);
 assert.equal(medianaReal([1, 2]), 1.5);
 const corr = (fps, listo) => ({ carga: { listoMs: listo, errores: ['e'] }, pasos: [{ nombre: 'base', fps: { p50: fps }, huecos: { n: 0, lista: [] } }] });
 const ag = agregarCorridas([corr(40, 100), corr(50, 300), corr(45, 200)]);
@@ -142,7 +155,7 @@ try {
       const rp = await correr('--repetir', '2', '--dur', '1', '--salida', join(tmp, 'rep'));
       assert.equal(rp.code, 0, rp.stderr);
       const jp = JSON.parse(readFileSync(join(tmp, 'rep.json'), 'utf8'));
-      assert.equal(jp.version, 3);
+      assert.equal(jp.version, 4);
       assert.equal(jp.repeticiones, 2);
       assert.equal(jp.corridas.length, 2);
       const g = jp.rango['base.fps.p50'], vals = jp.corridas.map((x) => x.pasos[0].fps.p50);
@@ -153,6 +166,15 @@ try {
       assert.doesNotMatch(cmd, /una corrida/);
       assert.ok(comparar(jp, jp).filas.every((x) => x.veredicto === '≈' || x.veredicto === '?'));
       console.log(`  --repetir 2: fps p50 ${vals.join(' / ')} → mediana ${jp.pasos[0].fps.p50}`);
+      // v4: --ab 2 → A#1 B#1 A#2 B#2 A#3, pares contra las A vecinas y sección A/B en el .md
+      writeFileSync(join(tmp, 'ab.json'), JSON.stringify([{ nombre: 'a', js: '1' }, { nombre: 'b', js: '2' }]));
+      const ra = await correr('--pasos', join(tmp, 'ab.json'), '--ab', '2', '--dur', '1', '--calentar', '0', '--salida', join(tmp, 'abr'));
+      assert.equal(ra.code, 0, ra.stderr);
+      const ja = JSON.parse(readFileSync(join(tmp, 'abr.json'), 'utf8'));
+      assert.deepEqual(ja.pasos.map((x) => x.nombre), ['a#1', 'b#1', 'a#2', 'b#2', 'a#3']);
+      assert.equal(ja.ab.pares.length, 2);
+      assert.match(readFileSync(join(tmp, 'abr.md'), 'utf8'), /## A\/B: a contra b/);
+      console.log(`  --ab 2: ${ja.ab.veredicto} (Δ fps ${ja.ab.dFps} %, ruido entre A ${ja.ab.ruidoA} %)`);
       // v3: congelado genérico, dos pasadas con dos pasos → capturas idénticas por paso
       writeFileSync(join(tmp, 'pasos.json'), JSON.stringify([{ nombre: 'a', dur: 0.5 }, { nombre: 'b', dur: 0.5, js: "document.body.style.background = '#225'" }]));
       for (const k of [1, 2]) {
