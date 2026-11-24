@@ -2,6 +2,33 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 
+## [0.5.0] - 2026-11-24
+
+Motivo: en las migraciones a three r187 de tres gemelos de plantas industriales el medidor dio falsas alarmas (draw calls al doble, regresiones que eran ruido de la máquina, +2.4 s de carga que solo pasan en la primera visita), se calló ante un congelamiento real (cambio de calidad en un gemelo en r160) y una corrida se colgó más de 9 minutos.
+
+### Agregado
+- `--intercalar <urlB>`: corridas A1 B1 A2 B2 …, reportes `-a`, `-b` y `-comparacion.md` con la sección "Intercalado" (Δ por par y veredicto).
+- `--caliente`: mide la segunda visita (con caché HTTP y de shaders); la primera queda en `carga.fria`.
+- `--limite S`: tope por corrida; la corrida colgada se descarta y se sigue. Código 3 si no queda ninguna.
+- Subcomando `capturas <url> --pasos vistas.json --captura dir/x.png [--solo-canvas]`: solo capturas, sin medir.
+- `comparar-capturas carpetaA carpetaB`: una fila por cada `.png` que esté en las dos.
+- `gl.callsMedia`, `gl.trisMedia` y `gl.alterna` por paso; nota en el `.md` y aviso en `comparar` cuando los draw calls alternan.
+- `shaders.nuevosProgramas` por paso.
+
+### Corregido
+- Las compilaciones que dispara el `js`/`espera` de un paso ya cuentan para ese paso (`t` negativo = "al aplicar el paso"). Antes un cambio de calidad en el `js` daba `links 0` y ninguna alerta.
+- `gl.deriva` usa la media de cada tercio: con draw calls que alternan, la mediana daba derivas falsas.
+- Con `--salida -` también se imprime el resumen por paso en stderr.
+- Auditoría de Codex (7 hallazgos, todos corregidos):
+  - un Chrome que terminaba de abrir después de vencer `--limite` se quedaba vivo y contaminaba la corrida siguiente; ahora se cierra solo;
+  - `--intercalar` con `--captura` perdía o sobrescribía la captura; ahora es un error que remite a `capturas`;
+  - `alternancia` confundía un cambio de escena en bloque con alternancia, y un cuadro suelto la escondía; ahora usa p5/p95 y exige cambios frecuentes de nivel;
+  - las capturas congeladas fallidas salían con código 0; ahora 3;
+  - `comparar-capturas` por carpetas salía con 0 aunque fallaran comparaciones; ahora 1.
+
+### Cambiado
+- JSON `version: 5` (solo agrega campos).
+
 ## [0.4.1] - 2026-11-23
 
 ### Corregido (auditoría externa)

@@ -9,11 +9,12 @@
 <canvas id="c"></canvas>
 <script>
 // WebGL2 crudo: exactamente 3 drawArrays de 1 triángulo por cuadro. window.__listo = true tras 5 cuadros. ?recompilar=1: ver abajo.
+// v0.5: ?alternar=1 dibuja 6 en los cuadros pares (como sombras cada 2 cuadros); window.__recompilarYa() enlaza un programa nuevo.
 const cv = document.getElementById('c'), gl = cv.getContext('webgl2');
 if (!gl) { window.__sinWebgl = true; window.__listo = true; }
 else {
   const sh = (t, s) => { const o = gl.createShader(t); gl.shaderSource(o, s); gl.compileShader(o); return o; };
-  const RECOMP = new URLSearchParams(location.search).has('recompilar'), pr = gl.createProgram();
+  const Q = new URLSearchParams(location.search), RECOMP = Q.has('recompilar'), ALT = Q.has('alternar'), pr = gl.createProgram();
   const vs = sh(gl.VERTEX_SHADER, `#version 300 es
 in vec2 p; uniform vec2 d; void main(){ gl_Position = vec4(p * .3 + d, 0., 1.); }`);
   const fs = sh(gl.FRAGMENT_SHADER, `#version 300 es
@@ -25,10 +26,11 @@ precision mediump float; out vec4 c; void main(){ c = vec4(.2, .8, .5, 1.); }`);
   gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
   const d = gl.getUniformLocation(pr, 'd');
   let n = 0;
+  window.__recompilarYa = () => { const q = gl.createProgram(); gl.attachShader(q, vs); gl.attachShader(q, fs); gl.linkProgram(q); };
   (function cuadro(t) {
     cv.width = cv.clientWidth * devicePixelRatio; cv.height = cv.clientHeight * devicePixelRatio;
     gl.viewport(0, 0, cv.width, cv.height); gl.clear(gl.COLOR_BUFFER_BIT);
-    for (let i = 0; i < 3; i++) { gl.uniform2f(d, (i - 1) * .6, Math.sin(t / 500 + i) * .3); gl.drawArrays(gl.TRIANGLES, 0, 3); }
+    for (let i = 0; i < (ALT && n % 2 ? 6 : 3); i++) { gl.uniform2f(d, (i - 1) * .6, Math.sin(t / 500 + i) * .3); gl.drawArrays(gl.TRIANGLES, 0, 3); }
     if (++n === 5) window.__listo = true;
     // ?recompilar=1: enlaza un programa nuevo cada ~1 s (simula una recompilación de shaders tras la carga)
     if (RECOMP && n > 5 && n % 60 === 0) { const q = gl.createProgram(); gl.attachShader(q, vs); gl.attachShader(q, fs); gl.linkProgram(q); }

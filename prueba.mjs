@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { percentil, resumirPaso, comparar, comparacionMd, aMarkdown, esSoftware, resumirHuecos, resumirShaders, alertas, medianaReal, agregarCorridas, leerPng, escribirPng, compararCapturas, deriva, resumirAB, alertasAB } from './lib.mjs';
+import { percentil, resumirPaso, comparar, comparacionMd, aMarkdown, esSoftware, resumirHuecos, resumirShaders, alertas, medianaReal, agregarCorridas, leerPng, escribirPng, compararCapturas, deriva, alternancia, resumirIntercalado, resumirAB, alertasAB } from './lib.mjs';
 
 const AQUI = dirname(fileURLToPath(import.meta.url));
 
@@ -18,7 +18,7 @@ assert.equal(percentil(cien, 50), 50);
 assert.equal(percentil([7], 1), 7);
 const p = resumirPaso({ nombre: 'x', durS: 1, ms: Array(60).fill(16.67), calls: [3, 3, 3], tris: [3, 3, 3], longTasks: [] });
 assert.ok(Math.abs(p.fps.p50 - 60) < 0.5, `p50 ${p.fps.p50}`);
-assert.deepEqual(p.gl, { calls: 3, tris: 3, callsMax: 3, trisMax: 3, deriva: null });
+assert.deepEqual(p.gl, { calls: 3, tris: 3, callsMax: 3, trisMax: 3, callsMedia: 3, trisMedia: 3, alterna: null, deriva: null });
 assert.equal(resumirPaso({ nombre: 'y', ms: [0, 0, 0.1] }).fps.p50, 10000, 'intervalo 0 (bajo la resolución de rAF): tope, no null');
 const ent = { gpu: 'G', viewport: [1, 1], dpr: 1, vsync: true, software: false };
 const rep = (fps, ms) => ({ entorno: ent, carga: {}, pasos: [{ nombre: 'base', fps: { p50: fps }, ms: { p50: ms } }] });
@@ -92,6 +92,34 @@ assert.equal(cc.total.difierenPct, 100);
 assert.deepEqual(cc.zonas[0].caja, [0, 0, 4, 2], 'zona en fracciones');
 assert.equal(leerPng(cc.diffPng).ancho, 4);
 assert.throws(() => compararCapturas(gris(1), escribirPng(2, 2, new Uint8Array(16))), /tamaños distintos/);
+// v0.5: draw calls que alternan (sombras cada 2 cuadros): deriva ≈ 0, alternancia detectada, comparar avisa y usa la media
+const alt = Array.from({ length: 91 }, (_, i) => (i % 2 ? 632 : 338));
+assert.ok(Math.abs(deriva(alt)) < 1, `deriva con alternancia: ${deriva(alt)}`);
+assert.deepEqual(alternancia(alt), { bajo: 338, alto: 632, fraccionAlto: 0.49 });
+assert.equal(alternancia(Array(50).fill(100)), null, 'constante: no alterna');
+assert.equal(alternancia(Array.from({ length: 60 }, (_, i) => 100 + (i % 7))), null, 'ruido chico: no alterna');
+assert.equal(alternancia([...Array(50).fill(338), ...Array(50).fill(632)]), null, 'un cambio de escena (bloques) no es alternancia');
+assert.deepEqual(alternancia([...Array.from({ length: 100 }, (_, i) => (i % 2 ? 632 : 338)), 10000]), { bajo: 338, alto: 632, fraccionAlto: 0.5 }, 'un cuadro suelto no la esconde');
+assert.ok(alternancia(Array.from({ length: 90 }, (_, i) => (i % 5 ? 100 : 300))), 'sombras cada 5 cuadros');
+const pAlt = resumirPaso({ nombre: 'alt', ms: Array(91).fill(16), calls: alt, tris: alt.map((x) => x * 100) });
+assert.equal(pAlt.gl.callsMedia, 483.4); // (46 × 338 + 45 × 632) / 91 assert.ok(pAlt.gl.alterna);
+const cAlt = comparar({ entorno: ent, carga: {}, pasos: [{ ...pAlt, gl: { ...pAlt.gl, calls: 338 } }] }, { entorno: ent, carga: {}, pasos: [{ ...pAlt, gl: { ...pAlt.gl, calls: 632 } }] });
+assert.match(cAlt.avisos.join(' '), /alternan entre dos niveles/);
+assert.equal(cAlt.filas.find((x) => x.metrica === 'alt.gl.callsMedia').veredicto, '≈', 'la media no cambia aunque la mediana salte');
+assert.match(aMarkdown({ url: 'u', fecha: 'f', entorno: { ...ent, plataforma: 'p', navegador: 'n' }, carga: { longTasks: { n: 0 } }, pasos: [pAlt] }), /alternan 338 \/ 632/);
+// v0.5: compilaciones al aplicar el paso (antes de medir) y programas nuevos sin links (p. ej. --sin-gl)
+const shp = resumirShaders({ links: [-0.4, -0.3], programas: 117, programasIni: 59, recompilaciones: [] });
+assert.equal(shp.nuevosProgramas, 58);
+assert.match(alertas({ pasos: [{ nombre: 'a_baja', shaders: shp, huecos: resumirHuecos([]) }] })[0], /\[a_baja\] 2 shaders compilados después de la carga, en 1 ráfaga\(s\) \(t = al aplicar el paso\)/);
+assert.match(alertas({ pasos: [{ nombre: 'x', shaders: resumirShaders({ links: [], programas: 70, programasIni: 60 }), huecos: resumirHuecos([]) }] })[0], /\[x\] 10 programas nuevos después de la carga/);
+assert.deepEqual(alertas({ pasos: [{ nombre: 'x', shaders: resumirShaders({ links: [], programas: 60, programasIni: 60 }), huecos: resumirHuecos([]) }] }), []);
+// v0.5: intercalado: B peor en todos los pares fuera del ruido; iguales → sin diferencia
+const cor = (...f) => f.map((x) => ({ pasos: [{ nombre: 'base', fps: { p50: x } }] }));
+const it1 = resumirIntercalado(cor(30, 31, 29), cor(25, 26, 24));
+assert.equal(it1[0].veredicto, 'B peor'); assert.deepEqual(it1[0].pares, [-16.7, -16.1, -17.2]); assert.equal(it1[0].ruidoA, 6.7);
+assert.equal(resumirIntercalado(cor(30, 38, 29), cor(31, 30, 30))[0].veredicto, 'sin diferencia clara', 'pares en distinto sentido');
+assert.equal(resumirIntercalado(cor(30), cor(null))[0].veredicto, 'sin pares');
+assert.ok(comparar({ ...rep(60, 16), entorno: { ...ent, caliente: true } }, rep(60, 16)).avisos.some((a) => a.startsWith('caliente')));
 console.log('unitaria: OK');
 
 // ---------------- integración
@@ -161,7 +189,7 @@ try {
       const rp = await correr('--repetir', '2', '--dur', '1', '--salida', join(tmp, 'rep'));
       assert.equal(rp.code, 0, rp.stderr);
       const jp = JSON.parse(readFileSync(join(tmp, 'rep.json'), 'utf8'));
-      assert.equal(jp.version, 4);
+      assert.equal(jp.version, 5);
       assert.equal(jp.repeticiones, 2);
       assert.equal(jp.corridas.length, 2);
       const g = jp.rango['base.fps.p50'], vals = jp.corridas.map((x) => x.pasos[0].fps.p50);
@@ -215,6 +243,61 @@ try {
       assert.equal(mal.code, 1);
       assert.match(mal.stderr, /no es un PNG/);
       console.log(`  comparar-capturas: sí misma Δ 0; aclarada Δ +${dl} %`);
+      // v0.5: draw calls que alternan → alterna detectado y la media
+      const al5 = await correr(url + '?alternar=1', '--salida', '-');
+      assert.equal(al5.code, 0, al5.stderr);
+      const ja5 = JSON.parse(al5.stdout).pasos[0].gl;
+      assert.deepEqual([ja5.alterna?.bajo, ja5.alterna?.alto], [3, 6], `alterna: ${JSON.stringify(ja5)}`);
+      assert.ok(ja5.callsMedia > 4 && ja5.callsMedia < 5, `callsMedia ${ja5.callsMedia}`);
+      assert.match(al5.stderr, /calls [\d.]+ \(media; alterna 3\/6\)/);
+      console.log(`  ?alternar=1: alterna ${ja5.alterna.bajo}/${ja5.alterna.alto}, media ${ja5.callsMedia}`);
+      // v0.5: el js de un paso que recompila → alerta "al aplicar el paso" (antes: 0 links y sin alerta)
+      writeFileSync(join(tmp, 'rjs.json'), JSON.stringify([{ nombre: 'quieto' }, { nombre: 'cambia', js: 'window.__recompilarYa()' }]));
+      const rj = await correr('--pasos', join(tmp, 'rjs.json'), '--dur', '1', '--calentar', '0', '--salida', '-');
+      assert.equal(rj.code, 0, rj.stderr);
+      const pj = JSON.parse(rj.stdout).pasos;
+      assert.equal(pj[0].shaders.links, 0, 'paso quieto'); assert.equal(pj[1].shaders.links, 1, 'el js del paso compiló 1');
+      assert.match(rj.stderr, /ALERTA: \[cambia\] 1 shaders compilados después de la carga, en 1 ráfaga\(s\) \(t = al aplicar el paso\)/);
+      console.log('  js de paso que recompila: alerta OK');
+      // v0.5: --limite: una corrida colgada se descarta y sale con código 3
+      const t0 = Date.now(), lim = await correr('--js', 'new Promise(() => {})', '--limite', '15', '--salida', '-');
+      assert.equal(lim.code, 3, lim.stderr); assert.match(lim.stderr, /pasó el límite de 15 s/);
+      assert.ok(Date.now() - t0 < 60000, 'no esperó de más');
+      console.log(`  --limite 15: corrida colgada cortada en ${Math.round((Date.now() - t0) / 1000)} s`);
+      // v0.5: --caliente: mide la segunda visita y guarda la fría
+      const ca5 = await correr('--caliente', '--salida', '-');
+      assert.equal(ca5.code, 0, ca5.stderr);
+      const jc5 = JSON.parse(ca5.stdout);
+      assert.equal(jc5.entorno.caliente, true); assert.ok(jc5.carga.fria?.listoMs > 0, 'carga.fria');
+      console.log(`  --caliente: fría ${jc5.carga.fria.listoMs} ms, caliente ${jc5.carga.listoMs} ms`);
+      // v0.5: --intercalar: A1 B1 A2 B2 y comparación con sección Intercalado
+      const ic = await correr('--intercalar', url + '?alternar=1', '--repetir', '2', '--dur', '1', '--calentar', '0', '--salida', join(tmp, 'ic'));
+      assert.equal(ic.code, 0, ic.stderr);
+      assert.ok(existsSync(join(tmp, 'ic-a.json')) && existsSync(join(tmp, 'ic-b.json')));
+      const icmd = readFileSync(join(tmp, 'ic-comparacion.md'), 'utf8');
+      assert.match(icmd, /## Intercalado/); assert.match(icmd, /alternan entre dos niveles/);
+      assert.deepEqual(ic.stderr.match(/par \d\/2: [AB]/g), ['par 1/2: A', 'par 1/2: B', 'par 2/2: A', 'par 2/2: B']);
+      const icc = await correr('--intercalar', url, '--captura', join(tmp, 'x.png'), '--salida', '-');
+      assert.equal(icc.code, 1); assert.match(icc.stderr, /--intercalar no captura/);
+      console.log('  --intercalar: A1 B1 A2 B2 OK; con --captura, error claro');
+      // v0.5: subcomando capturas con --solo-canvas y comparar-capturas de dos carpetas
+      writeFileSync(join(tmp, 'vistas.json'), JSON.stringify([{ nombre: 'v1' }, { nombre: 'v2', js: "document.body.style.background = '#522'" }]));
+      for (const d of ['ca', 'cb']) {
+        const cp = await new Promise((r) => execFile(process.execPath, [join(AQUI, 'medidor.mjs'), 'capturas', url, '--pasos', join(tmp, 'vistas.json'), '--captura', join(tmp, d, 'x.png'), '--solo-canvas', '--listo', 'window.__listo', '--calentar', '0'],
+          { timeout: 120000 }, (err, stdout, stderr) => r({ code: err ? err.code ?? 1 : 0, stderr })));
+        assert.equal(cp.code, 0, cp.stderr);
+      }
+      assert.ok(existsSync(join(tmp, 'ca', 'x-v1.png')) && existsSync(join(tmp, 'ca', 'x-v2.png')));
+      const dirs = await cli(join(tmp, 'ca'), join(tmp, 'cb'));
+      assert.equal(dirs.code, 0, dirs.stderr);
+      writeFileSync(join(tmp, 'cb', 'roto.png'), 'no'); writeFileSync(join(tmp, 'ca', 'roto.png'), 'no');
+      const dmal = await cli(join(tmp, 'ca'), join(tmp, 'cb'));
+      assert.equal(dmal.code, 1, 'una comparación fallida en carpetas: código 1'); assert.match(dmal.stderr, /1 de 3 comparaciones fallaron/);
+      rmSync(join(tmp, 'ca', 'roto.png')); rmSync(join(tmp, 'cb', 'roto.png'));
+      assert.match(dirs.stdout, /\| x-v1\.png \|/); assert.match(dirs.stdout, /\| x-v2\.png \|/); assert.match(dirs.stdout, /2 archivo\(s\)/);
+      const solo = leerPng(readFileSync(join(tmp, 'ca', 'x-v1.png')));
+      assert.ok(solo.ancho > 0 && solo.alto > 0);
+      console.log(`  capturas --solo-canvas + comparar-capturas de carpetas: ${solo.ancho}×${solo.alto}, 2 archivos`);
     }
   }
 } finally {

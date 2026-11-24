@@ -113,18 +113,20 @@
   window.__medidor = {
     ...C,
     // empieza un paso: borra muestras; el primer cuadro solo fija la referencia
+    // v0.5: antes del js/espera del paso. Lo que ese js compile (p. ej. cambiar la calidad) es del paso, aunque pase antes de medir.
+    prepararPaso() { S.tPaso = ahora(); S.progIni = T.r ? (T.r.info.programs || []).length : null; },
     marcar() { Object.assign(S, { activo: true, ms: [], calls: [], tris: [], huecos: [], ult: 0, c: 0, t: 0, t0: ahora() }); },
     // termina el paso y devuelve las muestras crudas; los tiempos van en s desde el inicio del paso
     leer() {
       S.activo = false;
-      const t0 = S.t0, rel = (t) => Math.round((t - t0) / 100) / 10;
+      const t0 = S.t0, tp = Math.min(S.tPaso ?? t0, t0), rel = (t) => (t < t0 ? Math.min(-0.1, Math.round((t - t0) / 100) / 10) : Math.round((t - t0) / 100) / 10);   // t < 0: al aplicar el paso
       return {
         ms: S.ms, calls: cfg.sinGl ? null : S.calls, tris: cfg.sinGl ? null : S.tris, durS: (ahora() - t0) / 1000,
         longTasks: desde(S.longTasks, t0).map(([, d]) => d), longTasksT: desde(S.longTasks, t0).map(([t, d]) => [rel(t), Math.round(d)]),
         huecos: S.huecos.map(([t, d]) => [rel(t), Math.round(d)]),
-        links: cfg.sinGl ? null : desde(S.links, t0).map(rel),
-        recompilaciones: desde(S.recomp, t0).map((r) => ({ ...r, t: rel(r.t) })),
-        programas: T.r ? (T.r.info.programs || []).length : null,
+        links: cfg.sinGl ? null : desde(S.links, tp).map(rel),
+        recompilaciones: desde(S.recomp, tp).map((r) => ({ ...r, t: rel(r.t) })),
+        programas: T.r ? (T.r.info.programs || []).length : null, programasIni: S.progIni ?? null,
       };
     },
     longTasksHasta: (t) => S.longTasks.filter(([s]) => s <= t).map(([, d]) => d),

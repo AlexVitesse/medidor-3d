@@ -36,14 +36,35 @@ export function agregarCorridas(corridas) {
   return { carga, pasos, rango };
 }
 
+const promedio = (v) => (v.length ? v.reduce((s, x) => s + x, 0) / v.length : null);
 /**
- * v0.4: cuánto cambió la escena DURANTE un paso: % de la mediana de draw calls del último tercio respecto al primero.
- * Medianas por tercio (no mín/máx): los cuadros con pasada de sombras o de un efecto dan picos periódicos que no son cambio de escena.
+ * v0.4: cuánto cambió la escena DURANTE un paso: % de draw calls del último tercio respecto al primero.
+ * v0.5: media por tercio, no mediana. Con sombras cada 2 cuadros (338/632 en un gemelo real) la mediana de un tercio cae en cualquiera de los
+ * dos niveles y daba una deriva falsa de +87 %; la media de un tercio promedia los picos periódicos igual en todos los tercios.
  */
 export function deriva(calls) {
   if (!calls || calls.length < 30) return null;
-  const k = Math.floor(calls.length / 3), a = mediana(calls.slice(0, k)), b = mediana(calls.slice(-k));
+  const k = Math.floor(calls.length / 3), a = promedio(calls.slice(0, k)), b = promedio(calls.slice(-k));
   return a ? r1((100 * (b - a)) / a) : null;
+}
+
+/**
+ * v0.5: ¿los draw calls alternan entre dos niveles (pasada de sombras cada N cuadros)? → {bajo, alto, fraccionAlto} o null.
+ * Con una serie así la mediana de calls/tris salta entre los dos niveles de una corrida a otra aunque nada cambie: hay que usar la media.
+ */
+export function alternancia(calls) {
+  if (!calls || calls.length < 20) return null;
+  // p5/p95 y no mín/máx: un cuadro suelto (10000 calls) no mueve el corte por encima de los dos niveles (auditoría de Codex)
+  const lo = percentil(calls, 5), hi = percentil(calls, 95);
+  if (!(hi >= lo * 1.2)) return null;
+  const corte = (lo + hi) / 2, alto = (x) => x >= corte, altos = calls.filter(alto), bajos = calls.filter((x) => !alto(x));
+  const fr = altos.length / calls.length, a = mediana(altos), b = mediana(bajos), cerca = (x, ref) => Math.abs(x - ref) <= ref * 0.1;
+  if (fr < 0.15 || fr > 0.85 || calls.filter((x) => cerca(x, a) || cerca(x, b)).length < calls.length * 0.8) return null;
+  // el orden importa: 50 cuadros bajos y luego 50 altos es un cambio de escena, no una pasada periódica. Con sombras cada N cuadros
+  // hay ~2 cambios de nivel por cada cuadro alto; se pide al menos la mitad de eso.
+  let cambios = 0; for (let i = 1; i < calls.length; i++) if (alto(calls[i]) !== alto(calls[i - 1])) cambios++;
+  if (cambios < Math.min(altos.length, bajos.length)) return null;
+  return { bajo: b, alto: a, fraccionAlto: r2(fr) };
 }
 export const DERIVA_MAX = 20; // % — más que esto y los fps del paso dependen de la escena, no de la variante
 
@@ -104,7 +125,7 @@ export function resumirPaso(c) {
     ms: { p50: r1(p50), p95: r1(p95), p99: r1(p99), max: r1(ms.length ? Math.max(...ms) : null) },
     longTasks: resumirLongTasks(c.longTasks || []),
     gl: c.calls ? { calls: mediana(c.calls), tris: mediana(c.tris), callsMax: c.calls.length ? Math.max(...c.calls) : null, trisMax: c.tris.length ? Math.max(...c.tris) : null,
-      deriva: deriva(c.calls) } : null,
+      callsMedia: r1(promedio(c.calls)), trisMedia: r1(promedio(c.tris)), alterna: alternancia(c.calls), deriva: deriva(c.calls) } : null,
     interactuar: !!c.interactuar,
     heapMB: c.heapMB || null, extra: c.extra ?? null,
     // v2: cuándo pasó cada cosa (s desde el inicio del paso), para ligar un tirón con su causa
@@ -125,7 +146,8 @@ export function resumirShaders(c) {
   // ráfagas: links a menos de 1 s uno del otro
   const rafagas = [];
   for (const t of links) { const u = rafagas[rafagas.length - 1]; if (u && t - u.fin <= 1) { u.fin = t; u.n++; } else rafagas.push({ t, fin: t, n: 1 }); }
-  return { links: links.length, programas: c.programas ?? null, rafagas: rafagas.map((r) => ({ t: r.t, n: r.n })), causas: rc.slice(0, 10) };
+  const nuevos = c.programas != null && c.programasIni != null ? c.programas - c.programasIni : null;
+  return { links: links.length, programas: c.programas ?? null, nuevosProgramas: nuevos, rafagas: rafagas.map((r) => ({ t: r.t, n: r.n })), causas: rc.slice(0, 10) };
 }
 
 /** Avisos legibles: recompilaciones después de la carga y cuadros congelados (> 1 s). */
@@ -135,10 +157,12 @@ export function alertas(r) {
   const A = ab;
   for (const p of r.pasos || []) {
     const s = p.shaders;
-    if (s?.links) {
+    if (s?.links || s?.nuevosProgramas > 0) {
       const causa = (s.causas || []).flatMap((x) => x.luces).filter((v, i, a) => a.indexOf(v) === i);
-      A.push(`[${p.nombre}] ${s.links} shaders compilados después de la carga, en ${s.rafagas.length} ráfaga(s) (t = ${s.rafagas.slice(0, 5).map((x) => x.t + ' s').join(', ')})` +
-        (causa.length ? ` · cambió: ${causa.join('; ')}` : (s.causas || []).length ? ` · pista: ${s.causas[0].claves[0]}` : ''));
+      // t < 0: pasó al aplicar el js/espera del paso, antes de medir (v0.5; antes no se contaba y un cambio de calidad no alertaba)
+      const cuando = s.rafagas.length ? `, en ${s.rafagas.length} ráfaga(s) (t = ${s.rafagas.slice(0, 5).map((x) => (x.t < 0 ? 'al aplicar el paso' : x.t + ' s')).join(', ')})` : '';
+      const n = s.links ? `${s.links} shaders compilados` : `${s.nuevosProgramas} programas nuevos`;
+      A.push(`[${p.nombre}] ${n} después de la carga${cuando}` + (causa.length ? ` · cambió: ${causa.join('; ')}` : (s.causas || []).length ? ` · pista: ${s.causas[0].claves[0]}` : ''));
     }
     if (!p.interactuar && Math.abs(p.gl?.deriva ?? 0) > DERIVA_MAX) A.push(`[${p.nombre}] la escena cambió durante el paso: draw calls ${p.gl.deriva > 0 ? '+' : ''}${p.gl.deriva} % del primer al último tercio; sus fps no se pueden comparar con otro paso (usa --ab o calienta más)`);
     if (p.huecos?.maxMs > 1000) A.push(`[${p.nombre}] 3D congelado ${(p.huecos.maxMs / 1000).toFixed(1)} s (t = ${p.huecos.lista[0][0]} s); ${p.huecos.n} cuadro(s) de más de 250 ms`);
@@ -162,6 +186,7 @@ export function aMarkdown(r) {
   const v = (ruta, x = leer(r, ruta)) => { const g = r.rango?.[ruta]; return g && g[0] !== g[1] ? `${x} [${g[0]}–${g[1]}]` : x; };
   L.push('', '## Carga', '', '| DOMContentLoaded | load | listo | peticiones | transferido | long tasks (n / total / máx ms) |', '|---|---|---|---|---|---|',
     `| ${v('carga.domContentLoadedMs')} ms | ${v('carga.loadMs')} ms | ${v('carga.listoMs')} ms | ${v('carga.peticiones')} | ${kb(c.transferidoBytes)} | ${v('carga.longTasks.n')} / ${v('carga.longTasks.totalMs')} / ${v('carga.longTasks.maxMs')} |`);
+  if (c.fria) L.push('', `Carga en caliente (--caliente: segunda visita, con caché de HTTP y de shaders). La primera visita tardó ${c.fria.listoMs} ms.`);
   if (c.masPesados?.length) L.push('', 'Más pesados:', '', ...c.masPesados.map((m) => `- ${kb(m.bytes)} · ${m.url}`));
   if (c.errores?.length) L.push('', 'Errores:', '', ...c.errores.map((x) => `- ${x}`));
   const al = alertas(r);
@@ -178,6 +203,7 @@ export function aMarkdown(r) {
     const q = (ruta) => v(`${p.nombre}.${ruta}`, leer(p, ruta));
     L.push(`| ${p.nombre} | ${p.durS} | ${q('cuadros')} | ${q('fps.media')} | ${q('fps.p50')} | ${q('fps.p5')} | ${q('fps.p1')} | ${q('ms.p50')} | ${q('ms.p95')} | ${q('ms.p99')} | ${q('ms.max')} | ${q('longTasks.n')} (${q('longTasks.totalMs')} ms) | ${p.gl ? `${q('gl.calls')} (${q('gl.callsMax')})` : '–'} | ${p.gl ? `${q('gl.tris')} (${q('gl.trisMax')})` : '–'} | ${p.heapMB ? `${q('heapMB.ini')}→${q('heapMB.fin')}` : '–'} |`);
   }
+  for (const p of r.pasos) if (p.gl?.alterna) L.push('', `Draw calls de \`${p.nombre}\` alternan ${p.gl.alterna.bajo} / ${p.gl.alterna.alto} (${Math.round(p.gl.alterna.fraccionAlto * 100)} % de cuadros altos, p. ej. sombras cada N cuadros): para comparar usa la media (${p.gl.callsMedia}), no la mediana.`);
   for (const p of r.pasos) if (p.extra != null) L.push('', `Extra de \`${p.nombre}\`:`, '', '```json', JSON.stringify(p.extra).slice(0, 2000), '```');
   for (const p of r.pasos) {
     if (p.huecos?.n) L.push('', `Tirones de \`${p.nombre}\` (t s · ms): ${p.huecos.lista.map(([t, d]) => `${t}·${d}`).join(', ')}`);
@@ -191,7 +217,7 @@ export function aMarkdown(r) {
 
 // métricas comparadas: [ruta, más es mejor]
 const METRICAS_PASO = [['fps.media', 1], ['fps.p50', 1], ['fps.p5', 1], ['fps.p1', 1], ['ms.p50', 0], ['ms.p95', 0], ['ms.p99', 0], ['ms.max', 0],
-  ['longTasks.n', 0], ['longTasks.totalMs', 0], ['huecos.n', 0], ['huecos.maxMs', 0], ['shaders.links', 0], ['gl.calls', 0], ['gl.tris', 0], ['heapMB.fin', 0]];
+  ['longTasks.n', 0], ['longTasks.totalMs', 0], ['huecos.n', 0], ['huecos.maxMs', 0], ['shaders.links', 0], ['gl.calls', 0], ['gl.tris', 0], ['gl.callsMedia', 0], ['gl.trisMedia', 0], ['heapMB.fin', 0]];
 const METRICAS_CARGA = [['listoMs', 0], ['loadMs', 0], ['peticiones', 0], ['transferidoBytes', 0], ['longTasks.totalMs', 0]];
 const leer = (o, ruta) => ruta.split('.').reduce((x, k) => x?.[k], o);
 // Umbral fijo del 5 %. Con --repetir, además, '≈' si |Δ| cabe en el ruido observado (ver ruidoRel).
@@ -213,7 +239,7 @@ function fila(metrica, a, b, masMejor, ruido = null) {
 /** Compara dos reportes: {avisos, filas:[{metrica, a, b, delta, veredicto}]} (veredicto de B respecto a A). */
 export function comparar(A, B) {
   const avisos = [];
-  for (const k of ['gpu', 'viewport', 'dpr', 'vsync', 'software']) {
+  for (const k of ['gpu', 'viewport', 'dpr', 'vsync', 'software', 'caliente']) {
     if (JSON.stringify(A.entorno?.[k]) !== JSON.stringify(B.entorno?.[k])) avisos.push(`${k} distinto: ${JSON.stringify(A.entorno?.[k])} vs ${JSON.stringify(B.entorno?.[k])}`);
   }
   // ruido de la fila = el del lado más disperso (null si ninguno tiene repeticiones)
@@ -223,6 +249,7 @@ export function comparar(A, B) {
     const pb = B.pasos.find((p) => p.nombre === pa.nombre);
     if (!pb) { avisos.push(`el paso "${pa.nombre}" solo está en A`); continue; }
     for (const [m, mm] of METRICAS_PASO) filas.push(f(`${pa.nombre}.${m}`, leer(pa, m), leer(pb, m), mm));
+    if (pa.gl?.alterna || pb.gl?.alterna) avisos.push(`"${pa.nombre}": los draw calls alternan entre dos niveles (sombras cada N cuadros); gl.calls y gl.tris (medianas) pueden diferir sin que nada cambie: compara gl.callsMedia y gl.trisMedia`);
   }
   for (const pb of B.pasos) if (!A.pasos.some((p) => p.nombre === pb.nombre)) avisos.push(`el paso "${pb.nombre}" solo está en B`);
   return { avisos, filas };
@@ -331,4 +358,21 @@ export function capturasMd(nA, nB, r) {
     '| zona | luminancia A | luminancia B | Δ% | píxeles que difieren % |', '|---|---|---|---|---|',
     fila('total', r.total), ...r.zonas.map((z) => fila(`${z.nombre} [${z.caja.join(', ')}]`, z)), '',
     '_Luminancia media 0–255, Rec. 601 sobre sRGB (como el modo "L" de PIL). Δ% = (B − A) / A._', ''].join('\n');
+}
+
+/**
+ * v0.5, --intercalar: corridas de A y B alternadas (A1 B1 A2 B2 …). Por paso, Δ fps p50 de cada par (Bi contra Ai) y veredicto:
+ * "B mejor/peor" solo si todos los pares van en el mismo sentido y la mediana de Δ supera máx(5 %, ruido de A entre corridas).
+ */
+export function resumirIntercalado(corrA, corrB) {
+  const pasos = [], ok = (x) => Number.isFinite(x) && x > 0;
+  for (const [i, p] of (corrA[0]?.pasos || []).entries()) {
+    const fa = corrA.map((c) => c.pasos[i]?.fps?.p50 ?? null), fb = corrB.map((c) => c.pasos[i]?.fps?.p50 ?? null), pares = [];
+    for (let k = 0; k < Math.min(fa.length, fb.length); k++) if (ok(fa[k]) && ok(fb[k])) pares.push(r1((100 * (fb[k] - fa[k])) / fa[k]));
+    const va = fa.filter(ok), ruido = va.length > 1 ? r1((100 * (Math.max(...va) - Math.min(...va))) / medianaReal(va)) : null, d = pares.length ? r1(medianaReal(pares)) : null;
+    const signo = pares.length && pares.every((x) => x > 0) ? 1 : pares.length && pares.every((x) => x < 0) ? -1 : 0;
+    pasos.push({ nombre: p.nombre, fpsA: fa, fpsB: fb, pares, dFps: d, ruidoA: ruido,
+      veredicto: !pares.length ? 'sin pares' : signo && Math.abs(d) > Math.max(5, ruido ?? 0) ? (signo > 0 ? 'B mejor' : 'B peor') : 'sin diferencia clara' });
+  }
+  return pasos;
 }

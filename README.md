@@ -21,8 +21,10 @@ node medidor.mjs <url> [--etiqueta x] [--dur 10] [--calentar 3] [--listo "<expr>
      [--pasos pasos.json] [--interactuar] [--ancho 1600 --alto 900 --dpr 1] [--sin-vsync] [--visible] [--sin-gl]
      [--chrome <ruta>] [--angle <backend>] [--extra "<expr>"] [--cpu 25] [--repetir 3]
      [--captura fin.png [--congelar "<expr>"] [--congelar-cuadros 120]] [--salida reportes/x | -]
+     [--intercalar <urlB>] [--caliente] [--limite S]
 node medidor.mjs comparar a.json b.json [--md comparacion.md]
-node medidor.mjs comparar-capturas a.png b.png [--zonas zonas.json] [--umbral 10] [--diff diff.png] [--md salida.md]
+node medidor.mjs comparar-capturas a.png|carpetaA b.png|carpetaB [--zonas zonas.json] [--umbral 10] [--diff diff.png] [--md salida.md]
+node medidor.mjs capturas <url> --pasos vistas.json --captura carpeta/pref.png [--solo-canvas] [--listo "<expr>"] [--js "<código>"]
 ```
 
 | opción | qué hace |
@@ -42,6 +44,10 @@ node medidor.mjs comparar-capturas a.png b.png [--zonas zonas.json] [--umbral 10
 | `--angle <backend>` | sustituye el backend ANGLE por defecto. |
 | `--salida x` | escribe `x.json` y `x.md`. Por defecto `reportes/<host>-<AAAAMMDD-HHMM>`. Con `-` el JSON va a stdout y los mensajes a stderr. |
 | `--ab N` | (v0.4) A/B intercalado. Los **dos últimos** pasos de `--pasos` son la variante A y la B; los anteriores corren una vez (preparación, cámara). Se miden A#1 B#1 A#2 … B#N A#N+1 y cada B se compara con la **media de sus dos A vecinas**: si la escena se pone más pesada con el tiempo, pesa igual en los dos lados. Ver "A/B intercalado" abajo. |
+| `--intercalar <urlB>` | (v0.5) compara dos URLs **intercalando** corridas: A1 B1 A2 B2 … (`--repetir N` = N pares). Si la máquina se pone más lenta a media prueba (otra app, temperatura), pesa igual en los dos lados. Escribe `<salida>-a.{json,md}`, `<salida>-b.{json,md}` y `<salida>-comparacion.md` con la tabla de `comparar` más una sección "Intercalado": Δ fps p50 de cada par y veredicto ("B mejor/peor" solo si todos los pares van en el mismo sentido y la mediana supera máx(5 %, ruido de A)). No se combina con `--ab` ni con `--captura` (para imágenes, `capturas` con cada URL y `comparar-capturas` de las dos carpetas). |
+| `--caliente` | (v0.5) carga la página dos veces en el mismo navegador y mide la **segunda** (con caché HTTP y de shaders), como un usuario que vuelve. La primera queda en `carga.fria`. Sin esta opción, cada corrida es una primera visita. |
+| `--limite S` | (v0.5) tope en segundos por corrida. Si se pasa, cierra el navegador, descarta la corrida y sigue con la siguiente; sin corridas completas sale con código 3. Por defecto: 2 × 120 s (carga y `listo`) + 1.5 × (calentar + pasos) + 60 s. |
+| `--solo-canvas` | (v0.5, con `capturas`) oculta la interfaz y captura solo el canvas más grande. |
 | `--repetir N` | (v0.3) corre la medición completa N veces, cada una en un **navegador nuevo** (perfil temporal limpio: sin caché HTTP ni de shaders, sin calentamiento heredado). El JSON trae las N corridas, y `carga`/`pasos` pasan a ser la **mediana** de cada métrica, con su `[mín, máx]` en `rango`. El `.md` muestra `mediana [mín–máx]`. Sin `--repetir`, el JSON es igual al de la 0.2 (solo cambia `version`). |
 | `--captura x.png` | sin congelar: captura al final de la (última) corrida, como en la 0.2. Con `--congelar` o `--congelar-cuadros`: capturas deterministas en una pasada aparte (ver abajo); con varios pasos sale una por paso, `x-<paso>.png`. |
 | `--congelar "<expr>"` | (v0.3) expresión que se evalúa en la pasada de capturas, tras `listo`, para que **la app** pause su reloj y fije la cámara (p. ej. `app.pausar(); app.camara([30, 25, 30], [0, 0, 0])`). Es el modo recomendado cuando la app lo permite. |
@@ -100,6 +106,33 @@ Los pasos se miden uno tras otro. Si la escena cambia mientras tanto (gente o ve
   - **Veredicto:** "B mejor" o "B peor" solo si **todos** los pares van en el mismo sentido y la mediana de Δ supera el 5 % y el ruido entre las A vecinas. Si no, sale "sin diferencia clara".
   - **Alertas:** si los draw calls de un B difieren más de 20 % de sus A vecinas, la escena cambió y esa diferencia no es de la variante. Si las A vecinas difieren más de 15 % entre sí, la escena no está estable: calienta más o congela la simulación.
 
+### Novedades de la v0.5 (24-nov-2026)
+
+Salieron de las migraciones a three r187 (tres gemelos de plantas industriales), donde el medidor dio falsas alarmas o se calló:
+
+- **Draw calls que alternan.** Un gemelo redibuja sombras cada 2 cuadros: los cuadros van 338, 632, 338, 632… La mediana cae en cualquiera de los dos y el medidor reportó 339 para r160 y 629 para r187, aunque hacían lo mismo cuadro por cuadro. Ahora cada paso trae `gl.callsMedia` y `gl.trisMedia`, `gl.alterna: {bajo, alto, fraccionAlto}` cuando la serie alterna, una nota en el `.md` y un aviso en `comparar`. Compara la media. `gl.deriva` usa la media de cada tercio (con la mediana, la alternancia daba derivas falsas de +87 %).
+- **Shaders que compila el `js` de un paso.** Se contaban solo durante la ventana de medición. Si el `js` cambiaba la calidad, la recompilación pasaba antes y salía `links 0`, sin alerta. En un gemelo en r160, de alta a baja a media a alta, los programas subían de 59 a 117 y el medidor no decía nada. Ahora cuentan desde el inicio del paso, con `t` negativo ("al aplicar el paso"), y la alerta dice qué cambió: `SpotLight 10 → 7; DirectionalLight sombra 1 → 0; shadowMap.type 2 → 1`. También `shaders.nuevosProgramas`.
+- **`--intercalar`.** Medir r160 y luego r187 con Zoom abierto dio una regresión falsa (p95 de 50 a 67 ms). Intercaladas, las dos daban lo mismo.
+- **`--caliente`.** Un gemelo en r187 tardaba 2.4 s más en cargar, pero solo en la primera visita: compilaba el PMREM y los shaders desde cero. Con caché, arrancaba más rápido que r160. El medidor siempre abría un perfil limpio y no lo podía distinguir.
+- **`capturas` y `comparar-capturas` con carpetas.** Hubo que escribir un script de capturas para cada gemelo (cargar, fijar hora y clima, mover la cámara, ocultar la interfaz, capturar el canvas). Ahora es `capturas <url> --pasos vistas.json --captura dir/x.png --solo-canvas`, y `comparar-capturas dirA dirB` compara todos los `.png` con el mismo nombre.
+- **`--limite`.** Una corrida con `--sin-vsync` se quedó colgada más de 9 minutos.
+
+Ejemplo de vistas para `capturas`, con la cámara expuesta por la app (`?medir`):
+
+```json
+[
+  { "nombre": "general", "espera": 2500, "js": "const G = window.__app; G.camera.position.set(-112, 78, 102); G.controls.target.set(18, 4, -28); G.controls.update()" },
+  { "nombre": "silo", "espera": 2500, "js": "const G = window.__app; G.camera.position.set(-35, 12, 25); G.controls.target.set(0, 10, 0); G.controls.update()" }
+]
+```
+
+```
+node medidor.mjs capturas "http://127.0.0.1:3120/?medir" --listo "!!window.__perf" --js "…fija hora y clima…" --pasos vistas.json --captura mig/r160/x.png --solo-canvas
+node medidor.mjs capturas "http://127.0.0.1:3121/?medir" --listo "!!window.__perf" --js "…fija hora y clima…" --pasos vistas.json --captura mig/r187/x.png --solo-canvas
+node medidor.mjs comparar-capturas mig/r160 mig/r187 --md mig/capturas.md
+node medidor.mjs http://127.0.0.1:3120/ --intercalar http://127.0.0.1:3121/ --repetir 3 --sin-vsync --dur 20 --salida mig/fps
+```
+
 ### `comparar-capturas` (v0.3)
 
 ```
@@ -135,7 +168,7 @@ node medidor.mjs comparar-capturas a.png b.png [--zonas zonas.json] [--umbral 10
 **Límite:** se mide la cadencia de `requestAnimationFrame`, no el tiempo de GPU. Para tiempo de GPU por cuadro, combinar con
 [stats-gl](https://github.com/RenaudRohlinger/stats-gl); para ver qué hay dentro de un cuadro, [Spector.js](https://spector.babylonjs.com/).
 
-### JSON (`version: 4`; cada versión solo agrega campos a la anterior; v4: `gl.deriva`, `interactuar` por paso y `ab`)
+### JSON (`version: 5`; cada versión solo agrega campos a la anterior; v4: `gl.deriva`, `interactuar` por paso y `ab`; v5: `gl.callsMedia`, `gl.trisMedia`, `gl.alterna`, `shaders.nuevosProgramas`, `entorno.caliente` y `carga.fria`)
 
 `entorno.motor` trae la versión del motor detectada en la página: `three` (de `window.__THREE__`, que three escribe al importarse, p. ej. `"187"`) y `babylon` (`BABYLON.Engine.Version`, solo si Babylon está en `window`). Si la app carga dos copias de three, `__THREE__` queda con la primera y three avisa en consola.
 
@@ -228,7 +261,7 @@ Caso típico: subir three de r160 a r187 y ver si algo se rompió, en rendimient
      { "nombre": "exterior", "dur": 8, "js": "document.getElementById('xray').click()" }
    ]
    ```
-2. **Medir las dos con repeticiones y captura congelada:**
+2. **Medir las dos con repeticiones y captura congelada** (desde la v0.5, mejor `--intercalar` para los fps y `capturas` para las imágenes: ver "Novedades de la v0.5"):
    ```
    node medidor.mjs http://127.0.0.1:3122/index.r160.html --repetir 3 --sin-vsync --dpr 1 --pasos pasos.json \
         --congelar-cuadros 120 --captura mig/r160.png --etiqueta r160 --salida mig/r160
@@ -294,7 +327,7 @@ Se aceptan por ahora; se resolverán si un caso real los necesita.
 
 - **Cambios de menos de 0.5 s:** si una luz cambia, se dibuja y vuelve a su estado en menos de 0.5 s, se ve el link pero no la causa. *A futuro:* envolver `renderer.compile`/`getProgram` para guardar la firma en el momento exacto del link, no por muestreo.
 - **Escenas y capas:** la firma suma todas las escenas que vio `__THREE_DEVTOOLS__` (también las que no se dibujan) y no toma en cuenta `light.layers` ni `camera.layers`. Un cambio de capas puede recompilar sin causa visible. *A futuro:* firmar solo la escena y la cámara del último `render()`, filtrando por capas como hace three.
-- **Horas de las recompilaciones:** una recompilación lleva la hora en que se detectó, no la del link. Un link justo antes de `marcar()` puede salir en el paso siguiente, y uno al final del paso puede quedar sin causa. Además, las tareas largas se filtran por su hora de inicio y `marcar()` descarta el primer intervalo. *A futuro:* guardar la hora de cada link en el envoltorio de `linkProgram` y cerrar el paso con una última revisión antes de `leer()`.
+- **Horas de las recompilaciones:** una recompilación lleva la hora en que se detectó, no la del link, y uno al final del paso puede quedar sin causa. (v0.5: los links desde el inicio del paso, incluido su `js`/`espera`, ya cuentan para ese paso; antes un cambio de calidad en el `js` daba `links 0`.) Además, las tareas largas se filtran por su hora de inicio y `marcar()` descarta el primer intervalo. *A futuro:* guardar la hora de cada link en el envoltorio de `linkProgram` y cerrar el paso con una última revisión antes de `leer()`.
 - **Ráfagas:** se redondea a décimas antes de agrupar, y una cadena continua de links forma una sola ráfaga aunque dure mucho. *A futuro:* agrupar con las horas sin redondear y partir las ráfagas de más de 5 s.
 - **Nombres:** "link", "programa nuevo" y "recompilación que congeló" se reportan como lo mismo, pero un link puede ser la primera vez que se dibuja un material, o una compilación asíncrona que no bloqueó. *A futuro:* marcar como "bloqueó" solo los links que coinciden con un hueco o una tarea larga.
 - **Coste:** la sonda recorre las escenas cada 0.5 s. No se ha medido su coste en escenas grandes. *A futuro:* medirlo con y sin sonda en el gemelo más pesado.
