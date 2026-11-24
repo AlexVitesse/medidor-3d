@@ -2,6 +2,11 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 
+## [Sin publicar]
+
+### Documentación
+- README, "Escena que cambia sola": la deriva de draw calls del caso de migración venía de un modo kiosco de la app (recorrido automático tras 25 s sin interacción), no de la escena. Se agrega la regla: apagar modos demo, kiosco o autorrotación antes de medir más de unos segundos.
+
 ## [0.5.0] - 2026-11-24
 
 Motivo: en las migraciones a three r187 de tres gemelos de plantas industriales el medidor dio falsas alarmas (draw calls al doble, regresiones que eran ruido de la máquina, +2.4 s de carga que solo pasan en la primera visita), se calló ante un congelamiento real (cambio de calidad en un gemelo en r160) y una corrida se colgó más de 9 minutos.
